@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Virtual envs
+venv/
+.venv/
+
+# Local secrets
+.env
+
+# Local data / indexes
+data/
+faiss/
+
+# Logs
+*.log
+
+# Editors
+.vscode/
+.idea/
