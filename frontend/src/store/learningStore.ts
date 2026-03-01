@@ -1,43 +1,101 @@
 import { create } from 'zustand';
 
+export interface Chapter {
+  id: string;
+  name: string;
+  pdfUrl?: string | null;
+  pageRange: { start: number; end: number };
+  documentId: string;
+  totalPages?: number | null;
+}
+
+export interface Textbook {
+  id: string;
+  title: string;
+  totalPages?: number | null;
+  chapters: Chapter[];
+}
+
 export interface Subject {
   id: string;
   name: string;
   icon: string;
-  chaptersCount: number;
-  progress: number;
+  textbooks: Textbook[];
+}
+
+export interface ChapterLookup {
+  subject: Subject;
+  textbook: Textbook;
+  chapter: Chapter;
 }
 
 interface LearningState {
   subjects: Subject[];
-  addSubject: (name: string) => void;
+  addSubject: (name: string) => string;
   removeSubject: (id: string) => void;
+  addTextbook: (subjectId: string, textbook: Textbook) => void;
+  removeTextbook: (subjectId: string, textbookId: string) => void;
+  findChapter: (chapterId: string) => ChapterLookup | null;
 }
 
-const defaultSubjects: Subject[] = [
-  { id: '1', name: 'Physics', icon: '⚛️', chaptersCount: 12, progress: 35 },
-  { id: '2', name: 'Biology', icon: '🧬', chaptersCount: 15, progress: 20 },
-  { id: '3', name: 'History', icon: '📜', chaptersCount: 10, progress: 60 },
-  { id: '4', name: 'Mathematics', icon: '📐', chaptersCount: 14, progress: 45 },
-];
+function safeId(): string {
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
-export const useLearningStore = create<LearningState>((set) => ({
-  subjects: defaultSubjects,
-  addSubject: (name: string) =>
+export const useLearningStore = create<LearningState>((set, get) => ({
+  subjects: [],
+
+  addSubject: (name: string) => {
+    const id = safeId();
     set((state) => ({
       subjects: [
         ...state.subjects,
         {
-          id: Date.now().toString(),
+          id,
           name,
           icon: '📖',
-          chaptersCount: 0,
-          progress: 0,
+          textbooks: [],
         },
       ],
-    })),
+    }));
+    return id;
+  },
+
   removeSubject: (id: string) =>
     set((state) => ({
       subjects: state.subjects.filter((s) => s.id !== id),
     })),
+
+  addTextbook: (subjectId: string, textbook: Textbook) =>
+    set((state) => ({
+      subjects: state.subjects.map((s) => {
+        if (s.id !== subjectId) return s;
+        return {
+          ...s,
+          textbooks: [textbook, ...s.textbooks],
+        };
+      }),
+    })),
+
+  removeTextbook: (subjectId: string, textbookId: string) =>
+    set((state) => ({
+      subjects: state.subjects.map((s) => {
+        if (s.id !== subjectId) return s;
+        return {
+          ...s,
+          textbooks: s.textbooks.filter((t) => t.id !== textbookId),
+        };
+      }),
+    })),
+
+  findChapter: (chapterId: string) => {
+    const state = get();
+    for (const subject of state.subjects) {
+      for (const textbook of subject.textbooks) {
+        const chapter = textbook.chapters.find((c) => c.id === chapterId);
+        if (chapter) return { subject, textbook, chapter };
+      }
+    }
+    return null;
+  },
 }));

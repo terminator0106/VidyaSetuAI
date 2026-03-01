@@ -14,12 +14,49 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _resolve_env_files() -> list[str]:
+    """Resolve env files to load.
+
+    Primary: `<backend>/.env` next to this source tree.
+    Fallbacks: `.env` in CWD, or `backend/.env` relative to CWD.
+
+    This prevents confusing cases where `uvicorn` is launched from a different
+    directory or an unexpected `app` package is imported from site-packages.
+    """
+
+    candidates: list[Path] = []
+
+    # Normal case: backend/.env (relative to this file location)
+    candidates.append(Path(__file__).resolve().parents[1] / ".env")
+
+    # Common local run fallbacks
+    cwd = Path.cwd().resolve()
+    candidates.append(cwd / ".env")
+    candidates.append(cwd / "backend" / ".env")
+
+    # Search upwards a bit (helps when launched from subfolders)
+    for parent in list(cwd.parents)[:6]:
+        candidates.append(parent / ".env")
+        candidates.append(parent / "backend" / ".env")
+
+    seen: set[Path] = set()
+    resolved: list[str] = []
+    for p in candidates:
+        if p in seen:
+            continue
+        seen.add(p)
+        if p.exists() and p.is_file():
+            resolved.append(str(p))
+
+    return resolved
+
+
 class Settings(BaseSettings):
     """Strongly-typed settings for the FastAPI service."""
 
     model_config = SettingsConfigDict(
-        # Load ONLY from backend/.env (plus process env). Do not auto-fallback.
-        env_file=str(Path(__file__).resolve().parents[1] / ".env"),
+        # Load from backend/.env (plus process env). Includes safe fallbacks.
+        env_file=_resolve_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -30,7 +67,12 @@ class Settings(BaseSettings):
     # API
     api_prefix: str = "/api"
     allowed_origins: List[str] = Field(
-        default_factory=lambda: ["http://localhost:8080"],
+        default_factory=lambda: [
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
         description="CORS allowlist origins (exact matches).",
     )
 
@@ -66,6 +108,15 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(...)
     openai_model_large: str = "gpt-4o"
     openai_model_small: str = "gpt-4o-mini"
+
+    # Groq (OpenAI-compatible) - allowed ONLY for index parsing during ingestion
+    groq_api_key: str | None = Field(default=None, description="Groq API key (used only for index parsing)")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
+    groq_model_index_parser: str = Field(
+        # Groq periodically decommissions older model IDs; keep a modern default.
+        default="llama-3.3-70b-versatile",
+        description="Groq model used for index parsing fallback (must output strict JSON)",
+    )
 
     # Embeddings
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

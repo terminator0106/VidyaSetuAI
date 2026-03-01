@@ -89,7 +89,7 @@ Health check:
 `/health` reports basic dependency status (DB + Redis) to make local setup issues obvious.
 
 ## Frontend connectivity
-The frontend lives in `gentle-guru-hub/` (Vite). It proxies `/api/*` to the backend.
+The frontend lives in `frontend/` (Vite). It proxies `/api/*` to the backend.
 
 Defaults:
 - Frontend dev server: `http://localhost:8080`

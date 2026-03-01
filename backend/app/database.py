@@ -50,6 +50,8 @@ def init_db() -> None:
     from app.models import session as _session  # noqa: F401
     from app.models import textbook as _textbook  # noqa: F401
     from app.models import user as _user  # noqa: F401
+    from app.models import chapter as _chapter  # noqa: F401
+    from app.models import textbook_index as _textbook_index  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 

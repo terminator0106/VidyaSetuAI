@@ -1,27 +1,29 @@
 """Textbook utility APIs.
 
-- Serve per-chapter PDFs created during ingestion
+- Serve per-chapter PDFs (generated on demand from page ranges)
+- List chapters with page ranges
 - Delete an ingested textbook and all associated artifacts
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.database import db_session
+from app.models.chapter import Chapter
 from app.models.textbook import Textbook
+from app.models.textbook_index import TextbookIndex
 from app.models.user import User
 from app.redis_client import get_redis
 from app.services.cache_keys import chapter_compressed_key, chapter_raw_key, chunk_key
-from app.services.textbook_store import chapter_pdf_path
+from app.services.textbook_store import chunks_path, pdf_path
 from app.services.vector_store import get_store
 from app.utils.security import get_current_user
 
@@ -36,15 +38,92 @@ async def get_chapter_pdf(
     chapter_key: str,
     user: User = Depends(get_current_user),
 ):
-    # chapter_key is sanitized to a safe file name internally.
-    path = chapter_pdf_path(textbook_id, chapter_key)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter PDF not found")
-    return FileResponse(
-        str(path),
+    with db_session() as db:
+        ch = (
+            db.query(Chapter)
+            .filter(Chapter.textbook_id == textbook_id, Chapter.chapter_key == chapter_key)
+            .first()
+        )
+        if not ch:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
+
+        src = pdf_path(textbook_id)
+        if not src.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source PDF not found")
+
+        # Generate chapter PDF on-demand (no stored per-chapter files).
+        import fitz  # local import to keep module import light
+
+        doc = fitz.open(str(src))
+        try:
+            total = int(doc.page_count)
+            start = max(1, min(total, int(ch.start_page)))
+            end = max(start, min(total, int(ch.end_page)))
+
+            out_doc = fitz.open()
+            try:
+                out_doc.insert_pdf(doc, from_page=start - 1, to_page=end - 1)
+                pdf_bytes = out_doc.tobytes(deflate=True)
+            finally:
+                out_doc.close()
+        finally:
+            doc.close()
+
+    filename = f"{chapter_key}.pdf"
+    return StreamingResponse(
+        content=iter([pdf_bytes]),
         media_type="application/pdf",
-        filename=path.name,
+        headers={"Content-Disposition": f"inline; filename=\"{filename}\""},
     )
+
+
+@router.get("/{textbook_id}/chapters")
+async def list_chapters(textbook_id: int, user: User = Depends(get_current_user)) -> dict:
+    with db_session() as db:
+        tb = db.query(Textbook).filter(Textbook.id == textbook_id).first()
+        if not tb:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Textbook not found")
+
+        chapters = (
+            db.query(Chapter)
+            .filter(Chapter.textbook_id == textbook_id)
+            .order_by(Chapter.chapter_number.asc())
+            .all()
+        )
+
+    return {
+        "textbook_id": str(textbook_id),
+        "chapters": [
+            {
+                "id": ch.chapter_key,
+                "title": ch.chapter_title,
+                "start_page": int(ch.start_page),
+                "end_page": int(ch.end_page),
+                "page_count": int(ch.page_count),
+            }
+            for ch in chapters
+        ],
+    }
+
+
+@router.get("/{textbook_id}/chapters/{chapter_key}/pages")
+async def get_chapter_pages(textbook_id: int, chapter_key: str, user: User = Depends(get_current_user)) -> dict:
+    with db_session() as db:
+        ch = (
+            db.query(Chapter)
+            .filter(Chapter.textbook_id == textbook_id, Chapter.chapter_key == chapter_key)
+            .first()
+        )
+        if not ch:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
+
+    return {
+        "textbook_id": str(textbook_id),
+        "chapter_id": chapter_key,
+        "start_page": int(ch.start_page),
+        "end_page": int(ch.end_page),
+        "pdf_url": f"/api/textbooks/{textbook_id}/chapters/{chapter_key}/pdf",
+    }
 
 
 def _textbook_root_dir(textbook_id: int) -> Path:
@@ -53,30 +132,6 @@ def _textbook_root_dir(textbook_id: int) -> Path:
 
 def _collect_cache_keys(tb: Textbook) -> List[str]:
     keys: List[str] = []
-
-    # Chunk keys
-    try:
-        chunks_path = Path(tb.chunks_path)
-        if chunks_path.exists():
-            raw = json.loads(chunks_path.read_text(encoding="utf-8"))
-            for c in raw.get("chunks", []) or []:
-                cid = str(c.get("chunk_id") or "")
-                if cid:
-                    keys.append(chunk_key(int(tb.id), cid))
-    except Exception:
-        logger.exception("Failed reading chunks for cache key cleanup")
-
-    # Chapter raw/compressed keys
-    try:
-        structure = tb.structure or {}
-        for ch in structure.get("chapters", []) or []:
-            ch_key = str(ch.get("key") or "")
-            if ch_key:
-                keys.append(chapter_raw_key(ch_key))
-                keys.append(chapter_compressed_key(ch_key))
-    except Exception:
-        logger.exception("Failed reading structure for cache key cleanup")
-
     return keys
 
 
@@ -93,9 +148,34 @@ async def delete_textbook(
         if not tb:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Textbook not found")
 
-        cache_keys = _collect_cache_keys(tb)
+        # Collect cache keys deterministically from DB + chunks.json.
+        cache_keys: List[str] = []
 
-        # Delete DB row first (so UI doesn't see it), then clean up artifacts.
+        # Chunk keys (from chunks.json on disk)
+        try:
+            p = Path(tb.chunks_path)
+            if p.exists():
+                import json
+
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                for c in raw.get("chunks", []) or []:
+                    cid = str(c.get("chunk_id") or "")
+                    if cid:
+                        cache_keys.append(chunk_key(int(tb.id), cid))
+        except Exception:
+            logger.exception("Failed reading chunks for cache key cleanup")
+
+        # Chapter raw/compressed keys (from chapters table)
+        try:
+            chapters = db.query(Chapter).filter(Chapter.textbook_id == textbook_id).all()
+            for ch in chapters:
+                cache_keys.append(chapter_raw_key(ch.chapter_key))
+                cache_keys.append(chapter_compressed_key(ch.chapter_key))
+        except Exception:
+            logger.exception("Failed reading chapters for cache key cleanup")
+
+        # Delete DB rows first (so UI doesn't see it), then clean up artifacts.
+        # Chapters + index rows cascade via FK.
         db.delete(tb)
 
     # Redis cleanup (best-effort)

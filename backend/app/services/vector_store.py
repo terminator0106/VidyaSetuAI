@@ -27,6 +27,23 @@ class VectorMeta:
     topic_key: str
     topic_title: str
     chunk_id: str
+    page_start: int | None = None
+    page_end: int | None = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "VectorMeta":
+        """Backwards-compatible loader for persisted metadata."""
+
+        return VectorMeta(
+            textbook_id=int(data.get("textbook_id")),
+            chapter_key=str(data.get("chapter_key")),
+            chapter_title=str(data.get("chapter_title")),
+            topic_key=str(data.get("topic_key")),
+            topic_title=str(data.get("topic_title")),
+            chunk_id=str(data.get("chunk_id")),
+            page_start=int(data["page_start"]) if data.get("page_start") is not None else None,
+            page_end=int(data["page_end"]) if data.get("page_end") is not None else None,
+        )
 
 
 class FaissVectorStore:
@@ -52,7 +69,7 @@ class FaissVectorStore:
             self._index = faiss.read_index(str(self._index_path))
             with self._meta_path.open("r", encoding="utf-8") as f:
                 raw = json.load(f)
-            self._meta = [VectorMeta(**m) for m in raw.get("meta", [])]
+            self._meta = [VectorMeta.from_dict(m) for m in raw.get("meta", [])]
             self._dim = self._index.d
 
     def _ensure_index(self, dim: int) -> None:

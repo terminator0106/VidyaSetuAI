@@ -41,19 +41,20 @@ const item = {
 
 export function Features() {
   return (
-    <section id="features" className="bg-card py-20">
-      <div className="mx-auto max-w-6xl px-4">
+    <section id="features" className="bg-card py-28">
+      <div className="mx-auto max-w-7xl px-6">
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="mb-12 text-center"
+          className="mb-16 text-center"
         >
-          <h2 className="mb-3 text-3xl font-bold text-foreground md:text-4xl">
+          <p className="mb-3 text-sm font-semibold uppercase tracking-widest text-primary">Features</p>
+          <h2 className="mb-4 text-4xl font-bold text-foreground md:text-5xl" style={{ fontFamily: "'Playfair Display', serif" }}>
             Designed for you
           </h2>
-          <p className="text-muted-foreground">
+          <p className="mx-auto max-w-xl text-lg text-muted-foreground">
             Every feature built with rural and semi-urban students in mind.
           </p>
         </motion.div>
@@ -63,21 +64,21 @@ export function Features() {
           initial="hidden"
           whileInView="show"
           viewport={{ once: true, margin: '-50px' }}
-          className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+          className="grid gap-8 sm:grid-cols-2 lg:grid-cols-3"
         >
           {features.map((f) => (
             <motion.div
               key={f.title}
               variants={item}
-              className="group rounded-xl border border-border bg-background p-6 transition-shadow hover:shadow-md"
+              className="group rounded-2xl border border-border bg-background p-8 transition-all hover:shadow-lg hover:-translate-y-1"
             >
-              <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <f.icon className="h-5 w-5" />
+              <div className="mb-5 inline-flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10 text-primary transition-colors group-hover:bg-primary group-hover:text-primary-foreground">
+                <f.icon className="h-7 w-7" />
               </div>
-              <h3 className="mb-2 text-lg font-semibold text-foreground" style={{ fontFamily: "'Source Sans 3', sans-serif" }}>
+              <h3 className="mb-3 text-xl font-semibold text-foreground">
                 {f.title}
               </h3>
-              <p className="text-sm leading-relaxed text-muted-foreground">{f.desc}</p>
+              <p className="text-base leading-relaxed text-muted-foreground">{f.desc}</p>
             </motion.div>
           ))}
         </motion.div>

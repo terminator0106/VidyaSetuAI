@@ -9,6 +9,10 @@ import Dashboard from "./pages/Dashboard";
 import AskPage from "./pages/AskPage";
 import NotFound from "./pages/NotFound";
 import { ProtectedRoute } from "./components/common/ProtectedRoute";
+import { AuthProvider } from "./components/common/AuthProvider";
+import SubjectPage from "./pages/SubjectPage";
+import ChapterPage from "./pages/ChapterPage";
+import AdminPage from "./pages/AdminPage";
 
 const queryClient = new QueryClient();
 
@@ -18,14 +22,19 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <AnimatePresence mode="wait">
-          <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-            <Route path="/ask" element={<ProtectedRoute><AskPage /></ProtectedRoute>} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AnimatePresence>
+        <AuthProvider>
+          <AnimatePresence mode="wait">
+            <Routes>
+              <Route path="/" element={<Index />} />
+              <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+              <Route path="/subject/:subjectId" element={<ProtectedRoute><SubjectPage /></ProtectedRoute>} />
+              <Route path="/chapter/:chapterId" element={<ProtectedRoute><ChapterPage /></ProtectedRoute>} />
+              <Route path="/admin" element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
+              <Route path="/ask" element={<ProtectedRoute><AskPage /></ProtectedRoute>} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AnimatePresence>
+        </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
