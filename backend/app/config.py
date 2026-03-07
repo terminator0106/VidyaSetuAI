@@ -104,19 +104,59 @@ class Settings(BaseSettings):
     admin_email: str | None = None
     admin_password: str | None = None
 
-    # OpenAI
-    openai_api_key: str = Field(...)
+    # LLM provider
+    llm_provider: str = Field(
+        default="groq",
+        description="Which provider to use for chat/compression: groq|openai",
+    )
+
+    # OpenAI (optional if llm_provider=groq)
+    openai_api_key: str | None = Field(default=None)
     openai_model_large: str = "gpt-4o"
     openai_model_small: str = "gpt-4o-mini"
 
-    # Groq (OpenAI-compatible) - allowed ONLY for index parsing during ingestion
-    groq_api_key: str | None = Field(default=None, description="Groq API key (used only for index parsing)")
+    # Groq (OpenAI-compatible)
+    groq_api_key: str | None = Field(default=None, description="Groq API key")
     groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
     groq_model_index_parser: str = Field(
         # Groq periodically decommissions older model IDs; keep a modern default.
         default="llama-3.3-70b-versatile",
         description="Groq model used for index parsing fallback (must output strict JSON)",
     )
+
+    groq_model_large: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model used for final answer generation",
+    )
+    groq_model_small: str = Field(
+        default="llama-3.1-8b-instant",
+        description="Groq model used for routing/compression/session memory",
+    )
+
+    @property
+    def model_large(self) -> str:
+        return self.groq_model_large if self.llm_provider == "groq" else self.openai_model_large
+
+    @property
+    def model_small(self) -> str:
+        return self.groq_model_small if self.llm_provider == "groq" else self.openai_model_small
+
+    # Cloudinary (PDF storage)
+    cloudinary_cloud_name: str | None = Field(default=None, description="Cloudinary cloud name")
+    cloudinary_api_key: str | None = Field(default=None, description="Cloudinary API key")
+    cloudinary_api_secret: str | None = Field(default=None, description="Cloudinary API secret")
+
+    @property
+    def CLOUDINARY_CLOUD_NAME(self) -> str | None:  # noqa: N802
+        return self.cloudinary_cloud_name
+
+    @property
+    def CLOUDINARY_API_KEY(self) -> str | None:  # noqa: N802
+        return self.cloudinary_api_key
+
+    @property
+    def CLOUDINARY_API_SECRET(self) -> str | None:  # noqa: N802
+        return self.cloudinary_api_secret
 
     # Embeddings
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from app.database import db_session
 from app.models.chapter import Chapter
 from app.models.textbook import Textbook
+from app.models.subject import Subject
 from app.models.textbook_index import TextbookIndex
 from app.models.user import User
 from app.redis_client import get_redis
@@ -33,6 +34,7 @@ from app.services.index_splitter import (
     extract_index_text,
     parse_index_chapters,
 )
+from app.services.cloudinary_storage import CloudinaryStorageError, upload_pdf
 from app.services.textbook_store import build_structure, pdf_path, write_chunks
 from app.services.vector_store import VectorMeta, get_store
 from app.services.llm_client import chat_text
@@ -46,6 +48,109 @@ def _chapter_key(textbook_id: int, chapter_number: int) -> str:
     """Stable chapter identifier used across APIs + vector metadata."""
 
     return f"tb{textbook_id}_ch{int(chapter_number):02d}"
+
+
+def _sanitize_subject(subject_id: Optional[str]) -> str:
+    """Sanitize a subject identifier for filenames/public IDs."""
+
+    raw = (subject_id or "").strip().lower()
+    if not raw:
+        return "subject"
+    out = []
+    for ch in raw:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in {"_", "-"}:
+            out.append(ch)
+        else:
+            out.append("_")
+    cleaned = "".join(out).strip("_-")
+    return cleaned or "subject"
+
+
+def _sanitize_component(raw: Optional[str], *, default: str) -> str:
+    """Sanitize a path component for Cloudinary public IDs."""
+
+    val = (raw or "").strip().lower()
+    if not val:
+        return default
+    out = []
+    for ch in val:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in {"_", "-"}:
+            out.append(ch)
+        elif ch.isspace() or ch in {"/", "\\", "."}:
+            out.append("_")
+        else:
+            out.append("_")
+    cleaned = "".join(out)
+    cleaned = "_".join([p for p in cleaned.split("_") if p])
+    cleaned = cleaned.strip("_-")
+    return cleaned or default
+
+
+def _cloudinary_is_configured() -> bool:
+    """Return True if Cloudinary credentials are configured."""
+
+    return bool(
+        (settings.CLOUDINARY_CLOUD_NAME or "").strip()
+        and (settings.CLOUDINARY_API_KEY or "").strip()
+        and (settings.CLOUDINARY_API_SECRET or "").strip()
+    )
+
+
+def _tmp_chapters_dir() -> Path:
+    """Return the temp directory used for per-chapter PDFs.
+
+    Spec requires `/tmp/chapters/`.
+    On Windows, this resolves to a path under the current drive root.
+    """
+
+    d = Path("/tmp/chapters")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_chapter_pdfs_to_tmp(
+    source_pdf: Path,
+    subject_id: Optional[str],
+    ranges: List[ChapterRange],
+) -> List[Path]:
+    """Generate per-chapter PDFs into `/tmp/chapters/`.
+
+    Naming convention: `{subject}_chp{chapter_number}.pdf`.
+
+    Returns:
+        List of written file paths, in chapter order.
+    """
+
+    import fitz
+
+    subject = _sanitize_subject(subject_id)
+    out_dir = _tmp_chapters_dir()
+    written: List[Path] = []
+
+    doc = fitz.open(str(source_pdf))
+    try:
+        total = int(doc.page_count)
+        for r in ranges:
+            start = max(1, min(total, int(r.start_page)))
+            end = max(start, min(total, int(r.end_page)))
+
+            out_path = out_dir / f"{subject}_chp{int(r.chapter_number)}.pdf"
+            new_doc = fitz.open()
+            try:
+                new_doc.insert_pdf(doc, from_page=start - 1, to_page=end - 1)
+                new_doc.save(str(out_path), deflate=True)
+            finally:
+                new_doc.close()
+
+            written.append(out_path)
+    finally:
+        doc.close()
+
+    return written
 
 
 def _extract_text_by_page_range(pdf_file: Path, start_page: int, end_page: int) -> List[tuple[int, str]]:
@@ -74,12 +179,25 @@ async def _handle_ingest(
     subjectId: Optional[str] = None,
     textbookName: Optional[str] = None,
 ) -> dict:
+    chapter_pdf_metadata: List[dict] = []
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please upload a PDF file")
 
     # Create DB row first to get an ID.
     with db_session() as db:
+        # Backwards-compat: if the frontend passes a subjectId but the subject
+        # wasn't created via /subjects yet, create a minimal subject row.
+        if subjectId:
+            existing_subject = (
+                db.query(Subject)
+                .filter(Subject.user_id == int(user.id), Subject.id == str(subjectId))
+                .first()
+            )
+            if existing_subject is None:
+                db.add(Subject(id=str(subjectId), user_id=int(user.id), name=str(subjectId)[:120], icon="📖"))
+
         tb = Textbook(
+            subject_id=str(subjectId) if subjectId else None,
             title=(textbookName or Path(file.filename).stem)[:300],
             board=None,
             language=None,
@@ -100,14 +218,14 @@ async def _handle_ingest(
 
         # STEP 1: Detect index pages and extract raw text.
         try:
-            index_pages, index_text = extract_index_text(str(out_pdf), max_pages=10)
+            index_pages, index_text = extract_index_text(str(out_pdf), max_pages=60)
         except IndexNotFoundError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Index/Table of Contents not found: {e}",
             )
 
-        # STEP 2: Parse index into chapters (regex fast-path; Groq fallback).
+        # STEP 2: Parse index into chapters (index-only; regex-only).
         try:
             parsed_chapters, page_offset = await parse_index_chapters(
                 index_text=index_text,
@@ -121,6 +239,58 @@ async def _handle_ingest(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Failed to parse index into chapters: {e}",
             )
+
+        # STEP 2b: Generate chapter PDFs into /tmp/chapters and upload (optional).
+        # These are temporary artifacts and are never stored in the repository.
+        if not _cloudinary_is_configured():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, "
+                    "and CLOUDINARY_API_SECRET in backend/.env."
+                ),
+            )
+
+        subject_slug = _sanitize_component(subjectId, default="subject")
+        textbook_slug = _sanitize_component(textbookName or tb.title, default=f"textbook_{textbook_id}")
+
+        tmp_paths: List[Path] = []
+        try:
+            tmp_paths = _write_chapter_pdfs_to_tmp(out_pdf, subjectId, list(ranges))
+
+            for r in ranges:
+                chapter_number = int(r.chapter_number)
+                chapter_name = f"chapter{chapter_number}"
+                public_id = f"{subject_slug}/{textbook_slug}/{chapter_name}"
+
+                local_path = _tmp_chapters_dir() / f"{_sanitize_subject(subjectId)}_chp{chapter_number}.pdf"
+                try:
+                    url = upload_pdf(file_path=str(local_path), public_id=public_id)
+                    chapter_pdf_metadata.append(
+                        {
+                            "chapter_title": str(r.chapter_title),
+                            "chapter_number": chapter_number,
+                            "cloudinary_url": url,
+                        }
+                    )
+                except CloudinaryStorageError as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"Failed to upload chapter PDF to Cloudinary: {e}",
+                    )
+                finally:
+                    # Always delete the local temp file after upload attempt.
+                    try:
+                        local_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        finally:
+            # Best-effort cleanup: remove any leftover temp PDFs.
+            for p in tmp_paths:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         # Cache index extraction/parsing in DB (never re-parse).
         idx_row = TextbookIndex(
@@ -146,21 +316,47 @@ async def _handle_ingest(
         )
         db.add(idx_row)
 
-        # STEP 3+4: Persist chapters with exact ranges.
+        # STEP 3+4: Persist chapters with exact ranges (upsert; no duplicates).
+        cloud_url_by_num = {
+            int(item.get("chapter_number")): str(item.get("cloudinary_url") or "")
+            for item in chapter_pdf_metadata
+            if item.get("chapter_number") is not None
+        }
+
+        existing_rows: List[Chapter] = list(db.query(Chapter).filter(Chapter.textbook_id == textbook_id).all())
+        existing_by_num = {int(c.chapter_number): c for c in existing_rows}
+
         chapters_db: List[Chapter] = []
         for r in ranges:
-            key = _chapter_key(textbook_id, r.chapter_number)
-            ch = Chapter(
-                textbook_id=textbook_id,
-                chapter_number=int(r.chapter_number),
-                chapter_title=str(r.chapter_title)[:300],
-                chapter_key=key,
-                start_page=int(r.start_page),
-                end_page=int(r.end_page),
-                page_count=int(r.page_count),
-            )
-            db.add(ch)
-            chapters_db.append(ch)
+            ch_num = int(r.chapter_number)
+            key = _chapter_key(textbook_id, ch_num)
+            cloud_url = (cloud_url_by_num.get(ch_num) or "").strip() or None
+
+            existing = existing_by_num.get(ch_num)
+            if existing is not None:
+                existing.subject_id = subjectId
+                existing.chapter_title = str(r.chapter_title)[:300]
+                existing.chapter_key = key
+                existing.start_page = int(r.start_page)
+                existing.end_page = int(r.end_page)
+                existing.page_count = int(r.page_count)
+                if cloud_url:
+                    existing.cloudinary_url = cloud_url
+                chapters_db.append(existing)
+            else:
+                ch = Chapter(
+                    textbook_id=textbook_id,
+                    subject_id=subjectId,
+                    chapter_number=ch_num,
+                    chapter_title=str(r.chapter_title)[:300],
+                    chapter_key=key,
+                    start_page=int(r.start_page),
+                    end_page=int(r.end_page),
+                    page_count=int(r.page_count),
+                    cloudinary_url=cloud_url,
+                )
+                db.add(ch)
+                chapters_db.append(ch)
 
         db.flush()
 
@@ -271,7 +467,7 @@ async def _handle_ingest(
                 },
                 {"role": "user", "content": raw},
             ]
-            comp = await chat_text(model=settings.openai_model_small, messages=messages, temperature=0.0)
+            comp = await chat_text(model=settings.model_small, messages=messages, temperature=0.0)
             if comp.text.strip():
                 await r.set(chapter_compressed_key(ch_key), comp.text.strip())
     except Exception:
@@ -282,6 +478,20 @@ async def _handle_ingest(
     structure = build_structure(chunks)
     for ch in structure.get("chapters", []):
         key = ch.get("key")
+        ch_num: Optional[int] = None
+        try:
+            # chapter keys look like tb{id}_chNN
+            if isinstance(key, str) and "_ch" in key:
+                ch_num = int(key.split("_ch", 1)[1])
+        except Exception:
+            ch_num = None
+        cloudinary_url: Optional[str] = None
+        if ch_num is not None:
+            for item in chapter_pdf_metadata:
+                if int(item.get("chapter_number") or -1) == ch_num:
+                    cloudinary_url = str(item.get("cloudinary_url") or "") or None
+                    break
+
         chapters_payload.append(
             {
                 "id": key,
@@ -290,6 +500,7 @@ async def _handle_ingest(
                 "end_page": ch.get("page_end"),
                 "pageRange": {"start": ch.get("page_start"), "end": ch.get("page_end")},
                 "pdfUrl": f"/api/textbooks/{textbook_id}/chapters/{key}/pdf" if key else None,
+                "cloudinary_url": cloudinary_url,
             }
         )
 
@@ -299,6 +510,7 @@ async def _handle_ingest(
         "subjectId": subjectId,
         "totalPages": total_pages,
         "chapters": chapters_payload,
+        "chapter_pdfs": chapter_pdf_metadata,
         "structure": structure,
     }
 

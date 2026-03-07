@@ -9,21 +9,28 @@ import { useLearningStore } from '@/store/learningStore';
 import { useTheme } from '@/hooks/useTheme';
 import { Sun, Moon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useEffect } from 'react';
 
 const Dashboard = () => {
   const { user, logout } = useAuthStore();
-  const { subjects, addSubject } = useLearningStore();
+  const { subjects, addSubject, loadSubjects } = useLearningStore();
   const [newSubject, setNewSubject] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const { isDark, toggle } = useTheme();
   const navigate = useNavigate();
 
+  useEffect(() => {
+    void loadSubjects();
+  }, [loadSubjects]);
+
   const handleAdd = () => {
     if (newSubject.trim()) {
-      const id = addSubject(newSubject.trim());
-      setNewSubject('');
-      setShowAdd(false);
-      navigate(`/subject/${encodeURIComponent(id)}`);
+      void (async () => {
+        const id = await addSubject(newSubject.trim());
+        setNewSubject('');
+        setShowAdd(false);
+        navigate(`/subject/${encodeURIComponent(id)}`);
+      })();
     }
   };
 

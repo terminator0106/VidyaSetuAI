@@ -117,6 +117,68 @@ class FaissVectorStore:
                 results.append((float(score), self._meta[idx]))
             return results
 
+    def has_chapter(self, chapter_key: str) -> bool:
+        chapter_key = (chapter_key or "").strip()
+        if not chapter_key:
+            return False
+        with self._lock:
+            return any((m.chapter_key == chapter_key) for m in self._meta)
+
+    def chunk_ids_for_textbook(self, textbook_id: int) -> List[str]:
+        """Return all chunk_ids belonging to a given textbook (from metadata)."""
+
+        tid = int(textbook_id)
+        with self._lock:
+            if not self._meta:
+                return []
+            return [m.chunk_id for m in self._meta if int(m.textbook_id) == tid and str(m.chunk_id or "").strip()]
+
+    def search_chapter(self, vector: np.ndarray, chapter_key: str, top_k: int = 8) -> List[Tuple[float, VectorMeta]]:
+        """Search only within a single chapter.
+
+        This does NOT run a global FAISS search and then prune; it computes
+        similarities only against vectors whose metadata matches `chapter_key`.
+        """
+
+        if vector.ndim != 1:
+            raise ValueError("query vector must be 1D")
+
+        chapter_key = (chapter_key or "").strip()
+        if not chapter_key:
+            raise ValueError("chapter_key is required")
+
+        with self._lock:
+            if self._index is None or self._index.ntotal == 0 or not self._meta:
+                return []
+
+            indices = [i for i, m in enumerate(self._meta) if m.chapter_key == chapter_key]
+            if not indices:
+                return []
+
+            dim = int(self._index.d)
+            q = vector.astype("float32")
+            if q.shape[0] != dim:
+                raise ValueError(f"Embedding dim mismatch: got {q.shape[0]}, expected {dim}")
+
+            # Reconstruct only the chapter's vectors, then score via dot product.
+            mat = np.zeros((len(indices), dim), dtype="float32")
+            for row_i, vec_i in enumerate(indices):
+                mat[row_i, :] = self._index.reconstruct(int(vec_i))
+
+            scores = mat @ q
+            k = int(min(max(top_k, 1), scores.shape[0]))
+
+            # Partial sort for top-k, then order.
+            top_rows = np.argpartition(-scores, k - 1)[:k]
+            top_rows = top_rows[np.argsort(-scores[top_rows])]
+
+            results: List[Tuple[float, VectorMeta]] = []
+            for row_i in top_rows.tolist():
+                meta_idx = indices[int(row_i)]
+                results.append((float(scores[int(row_i)]), self._meta[int(meta_idx)]))
+
+            return results
+
     def persist(self) -> None:
         """Persist index + metadata to disk."""
 

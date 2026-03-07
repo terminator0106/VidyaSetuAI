@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -35,6 +35,9 @@ class Chapter(Base):
         nullable=False,
     )
 
+    # Optional subject identifier provided by the client (string-based; no FK).
+    subject_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+
     chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
     chapter_title: Mapped[str] = mapped_column(String(300), nullable=False)
 
@@ -45,5 +48,8 @@ class Chapter(Base):
     start_page: Mapped[int] = mapped_column(Integer, nullable=False)
     end_page: Mapped[int] = mapped_column(Integer, nullable=False)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Where the chapter PDF is stored (Cloudinary secure URL).
+    cloudinary_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

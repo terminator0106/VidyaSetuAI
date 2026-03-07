@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, BookOpen, Loader2, Trash2, LogOut, Sun, Moon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -28,12 +28,27 @@ export default function SubjectPage() {
     const subject = useLearningStore(
         (s) => s.subjects.find((x) => x.id === (subjectId || '')) || null,
     );
+    const hydrateSubject = useLearningStore((s) => s.hydrateSubject);
     const addTextbook = useLearningStore((s) => s.addTextbook);
     const removeTextbook = useLearningStore((s) => s.removeTextbook);
 
     const [file, setFile] = useState<File | null>(null);
     const [isUploading, setIsUploading] = useState(false);
+    const [isHydrating, setIsHydrating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!subjectId) return;
+        // After refresh, subjects may be restored from localStorage without textbooks.
+        // In that case we still need to hydrate from the backend.
+        if (subject && (subject.textbooks?.length || 0) > 0) return;
+        setIsHydrating(true);
+        void hydrateSubject(subjectId)
+            .catch(() => {
+                // SubjectPage will render "Subject not found" if hydration fails.
+            })
+            .finally(() => setIsHydrating(false));
+    }, [hydrateSubject, subject, subjectId]);
 
     const textbooks = subject?.textbooks || [];
 
@@ -93,11 +108,19 @@ export default function SubjectPage() {
         }
     };
 
-    if (!subjectId || !subject) {
+    if (!subjectId || (!subject && !isHydrating)) {
         return (
             <div className="min-h-screen bg-background p-6">
                 <p className="mb-4 text-foreground">Subject not found.</p>
                 <Button onClick={() => navigate('/dashboard')}>Back to dashboard</Button>
+            </div>
+        );
+    }
+
+    if (!subject) {
+        return (
+            <div className="min-h-screen bg-background p-6">
+                <p className="mb-4 text-foreground">Loading…</p>
             </div>
         );
     }

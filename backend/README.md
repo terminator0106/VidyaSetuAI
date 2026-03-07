@@ -76,7 +76,12 @@ If you don't want to install Postgres for local dev, you can run with SQLite ins
 ### 4) Redis (local)
 Run Redis on `localhost:6379`.
 
-If Redis is down, the backend will log a warning and continue without caching/session memory (no crash).
+If Redis is down, the backend will log a warning once and automatically fall back to an in-memory cache (so the app still works). This fallback is per-process and resets on restart.
+
+Windows-friendly options to run Redis:
+- Docker Desktop: `docker run --name vidyasetu-redis -p 6379:6379 -d redis:7-alpine`
+- Memurai (Redis-compatible for Windows): install and ensure it listens on `127.0.0.1:6379`
+- WSL: install Redis inside your WSL distro and expose port `6379`
 
 ## Run the server
 From the `backend/` folder with venv activated:
@@ -101,3 +106,6 @@ If you need to override the backend URL, set in the frontend:
 ## Data persistence
 - Embeddings + FAISS index + chunk files are persisted under `backend/data/` by default.
 - You can override with `DATA_DIR` in `.env`.
+
+## Chapter splitting accuracy
+Chapters are split using the Table of Contents (printed page numbers). The backend auto-detects the offset between printed page numbers (header/footer) and the underlying PDF page index, so chapter ranges align with the page numbers printed on the textbook pages.

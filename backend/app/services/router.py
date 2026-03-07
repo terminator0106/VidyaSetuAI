@@ -53,7 +53,7 @@ async def detect_difficulty(question_en: str) -> str:
         },
         {"role": "user", "content": question_en},
     ]
-    res = await chat_text(model=settings.openai_model_small, messages=messages, temperature=0.0)
+    res = await chat_text(model=settings.model_small, messages=messages, temperature=0.0)
     out = res.text.strip().lower()
     if out in {"easy", "medium", "hard"}:
         return out
@@ -64,12 +64,12 @@ def route_model(estimated_input_tokens: int, difficulty: str) -> str:
     """Route to a model given estimated context size and difficulty."""
 
     if difficulty == "hard":
-        return settings.openai_model_large
+        return settings.model_large
 
     if estimated_input_tokens <= 2400 and difficulty in {"easy", "medium"}:
-        return settings.openai_model_small
+        return settings.model_small
 
-    return settings.openai_model_large
+    return settings.model_large
 
 
 def estimate_prompt_tokens(text: str, model: str) -> int:

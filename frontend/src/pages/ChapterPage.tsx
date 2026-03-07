@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Send, Sparkles, ListOrdered } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ask, AskMode } from '@/services/ask';
+import { ask, AskMode, getChapterHistory } from '@/services/ask';
 import { getChapterPages } from '@/services/textbooks';
 import { useLearningStore } from '@/store/learningStore';
 
@@ -27,11 +27,19 @@ export default function ChapterPage() {
     const navigate = useNavigate();
     const lookup = useLearningStore((s) => (chapterId ? s.findChapter(chapterId) : null));
 
+    const resolvedTextbookId = lookup ? (lookup.textbook.id || lookup.chapter.documentId || null) : null;
+    const resolvedChapterId = lookup?.chapter.id ?? null;
+    const fallbackPdfUrl = lookup?.chapter.pdfUrl ?? '';
+    const fallbackRangeStart = lookup?.chapter.pageRange?.start ?? null;
+    const fallbackRangeEnd = lookup?.chapter.pageRange?.end ?? null;
+
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isTyping, setIsTyping] = useState(false);
     const [sessionId, setSessionId] = useState<string | undefined>(undefined);
     const bottomRef = useRef<HTMLDivElement>(null);
+
+    const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
 
     const [chapterPdfUrl, setChapterPdfUrl] = useState<string>('');
     const [rangeInfo, setRangeInfo] = useState<{ start: number; end: number } | null>(null);
@@ -48,29 +56,67 @@ export default function ChapterPage() {
     }, [messages, isTyping]);
 
     useEffect(() => {
-        const run = async () => {
-            if (!lookup) return;
-            const textbookId = lookup.textbook.id || lookup.chapter.documentId;
-            if (!textbookId) return;
+        if (!resolvedChapterId) return;
 
-            setIsLoadingPages(true);
+        let cancelled = false;
+        const run = async () => {
+            setIsLoadingHistory(true);
             try {
-                const res = await getChapterPages(textbookId, lookup.chapter.id);
-                setChapterPdfUrl(res.pdf_url);
-                setRangeInfo({ start: res.start_page, end: res.end_page });
-                setPageInChapter(1);
+                const hist = await getChapterHistory(resolvedChapterId);
+                if (cancelled) return;
+
+                const msgs: Message[] = (hist.messages || []).map((m) => ({
+                    id: m.id,
+                    role: m.role,
+                    content: m.content,
+                }));
+                setMessages(msgs);
+                if (hist.sessionId) setSessionId(String(hist.sessionId));
             } catch {
-                // Fallback to whatever was returned by ingest.
-                setChapterPdfUrl(lookup.chapter.pdfUrl || '');
-                setRangeInfo({ start: lookup.chapter.pageRange.start, end: lookup.chapter.pageRange.end });
-                setPageInChapter(1);
+                // If history fails (e.g., 401 before auth), don't block the page.
             } finally {
-                setIsLoadingPages(false);
+                if (!cancelled) setIsLoadingHistory(false);
             }
         };
 
         void run();
-    }, [lookup]);
+        return () => {
+            cancelled = true;
+        };
+    }, [resolvedChapterId]);
+
+    useEffect(() => {
+        if (!resolvedTextbookId || !resolvedChapterId) return;
+
+        let cancelled = false;
+        const run = async () => {
+            setIsLoadingPages(true);
+            try {
+                const res = await getChapterPages(resolvedTextbookId, resolvedChapterId);
+                if (cancelled) return;
+                setChapterPdfUrl(res.pdf_url);
+                setRangeInfo({ start: res.start_page, end: res.end_page });
+                setPageInChapter(1);
+            } catch {
+                if (cancelled) return;
+                if (fallbackRangeStart != null && fallbackRangeEnd != null) {
+                    setChapterPdfUrl(fallbackPdfUrl || '');
+                    setRangeInfo({ start: fallbackRangeStart, end: fallbackRangeEnd });
+                    setPageInChapter(1);
+                } else {
+                    setChapterPdfUrl('');
+                    setRangeInfo(null);
+                }
+            } finally {
+                if (!cancelled) setIsLoadingPages(false);
+            }
+        };
+
+        void run();
+        return () => {
+            cancelled = true;
+        };
+    }, [resolvedTextbookId, resolvedChapterId, fallbackPdfUrl, fallbackRangeStart, fallbackRangeEnd]);
 
     const send = async (text: string, mode: AskMode = 'default') => {
         if (!text.trim() || isTyping) return;
@@ -117,11 +163,8 @@ export default function ChapterPage() {
     }
 
     const pdfUrl = chapterPdfUrl || lookup.chapter.pdfUrl || '';
-    const iframeSrc = useMemo(() => {
-        if (!pdfUrl) return '';
-        const safePage = Math.max(1, Math.floor(pageInChapter || 1));
-        return `${pdfUrl}#page=${safePage}`;
-    }, [pdfUrl, pageInChapter]);
+    const safePage = Math.max(1, Math.floor(pageInChapter || 1));
+    const iframeSrc = pdfUrl ? `${pdfUrl}#page=${safePage}` : '';
 
     return (
         <div className="flex h-screen flex-col bg-background">
@@ -226,12 +269,21 @@ export default function ChapterPage() {
                                 </div>
                             )}
 
+                            {isLoadingHistory && messages.length === 0 && (
+                                <div className="mb-5 flex justify-start">
+                                    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-5 py-4 text-base text-muted-foreground">
+                                        <Loader2 className="h-5 w-5 animate-spin" />
+                                        Loading chat...
+                                    </div>
+                                </div>
+                            )}
+
                             {messages.map((msg) => (
                                 <div key={msg.id} className={`mb-5 flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                     <div
                                         className={`max-w-[85%] rounded-2xl px-5 py-4 text-base leading-relaxed ${msg.role === 'user'
-                                                ? 'bg-primary text-primary-foreground'
-                                                : 'border border-border bg-card text-card-foreground'
+                                            ? 'bg-primary text-primary-foreground'
+                                            : 'border border-border bg-card text-card-foreground'
                                             }`}
                                         style={{ whiteSpace: 'pre-wrap' }}
                                     >

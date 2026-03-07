@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.services.groq_client import groq_chat_text
 
 
 @dataclass(frozen=True)
@@ -32,16 +33,35 @@ _client: Optional[AsyncOpenAI] = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
+        if not settings.openai_api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not configured. Set it or switch LLM_PROVIDER=groq."
+            )
         _client = AsyncOpenAI(api_key=settings.openai_api_key)
     return _client
 
 
-async def chat_text(model: str, messages: List[Dict[str, str]], temperature: float = 0.2) -> LlmResult:
+async def chat_text(
+    model: str,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+) -> LlmResult:
+    if settings.llm_provider == "groq":
+        groq_res = await groq_chat_text(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return LlmResult(text=groq_res.text, model=groq_res.model, usage=None)
+
     client = _get_client()
     resp = await client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=temperature,
+        max_tokens=max_tokens,
     )
 
     choice = resp.choices[0]
@@ -49,7 +69,10 @@ async def chat_text(model: str, messages: List[Dict[str, str]], temperature: flo
 
     usage = None
     if getattr(resp, "usage", None):
-        usage = LlmUsage(prompt_tokens=int(resp.usage.prompt_tokens), completion_tokens=int(resp.usage.completion_tokens))
+        usage = LlmUsage(
+            prompt_tokens=int(resp.usage.prompt_tokens),
+            completion_tokens=int(resp.usage.completion_tokens),
+        )
 
     return LlmResult(text=text, model=model, usage=usage)
 

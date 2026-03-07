@@ -54,7 +54,7 @@ async def compress_chunks(
                 "content": f"Question: {question_en}\nDifficulty: {difficulty}\n\nTextbook chunk:\n{chunk}",
             },
         ]
-        res = await chat_text(model=settings.openai_model_small, messages=messages, temperature=0.0)
+        res = await chat_text(model=settings.model_small, messages=messages, temperature=0.0)
         note = res.text.strip()
         if note:
             per_chunk_notes.append(note)
@@ -62,7 +62,7 @@ async def compress_chunks(
     merged = "\n\n".join(per_chunk_notes).strip()
 
     # Final trim pass if needed.
-    token_est = count_tokens(merged, model=settings.openai_model_small)
+    token_est = count_tokens(merged, model=settings.model_small)
     if token_est > target_tokens:
         messages = [
             {
@@ -74,8 +74,8 @@ async def compress_chunks(
                 "content": f"Target token budget: {target_tokens}\n\nNotes:\n{merged}",
             },
         ]
-        res2 = await chat_text(model=settings.openai_model_small, messages=messages, temperature=0.0)
+        res2 = await chat_text(model=settings.model_small, messages=messages, temperature=0.0)
         merged = res2.text.strip()
-        token_est = count_tokens(merged, model=settings.openai_model_small)
+        token_est = count_tokens(merged, model=settings.model_small)
 
     return CompressedContext(text=merged, input_tokens_est=token_est)

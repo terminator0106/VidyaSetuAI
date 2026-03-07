@@ -27,6 +27,15 @@ def retrieve_top_k(question_en: str, top_k: int = 12) -> List[RetrievedChunk]:
     return [RetrievedChunk(score=s, meta=m) for s, m in hits]
 
 
+def retrieve_top_k_for_chapter(question_en: str, chapter_key: str, top_k: int = 12) -> List[RetrievedChunk]:
+    """Retrieve top-K chunks restricted to a single chapter."""
+
+    store = get_store()
+    qv = embed_query(question_en)
+    hits = store.search_chapter(qv, chapter_key=chapter_key, top_k=top_k)
+    return [RetrievedChunk(score=s, meta=m) for s, m in hits]
+
+
 def top_chapters(chunks: List[RetrievedChunk], max_chapters: int = 3, min_score: float = 0.15) -> List[Tuple[str, float]]:
     """Aggregate chunk scores into chapter-level relevance."""
 

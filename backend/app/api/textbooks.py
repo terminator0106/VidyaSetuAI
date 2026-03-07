@@ -18,11 +18,13 @@ from fastapi.responses import StreamingResponse
 from app.config import settings
 from app.database import db_session
 from app.models.chapter import Chapter
+from app.models.session import Session
 from app.models.textbook import Textbook
 from app.models.textbook_index import TextbookIndex
 from app.models.user import User
 from app.redis_client import get_redis
-from app.services.cache_keys import chapter_compressed_key, chapter_raw_key, chunk_key
+from app.services.cache_keys import chapter_compressed_key, chapter_raw_key, chunk_key, session_summary_key
+from app.services.cloudinary_storage import CloudinaryStorageError, delete_file, public_id_from_url
 from app.services.textbook_store import chunks_path, pdf_path
 from app.services.vector_store import get_store
 from app.utils.security import get_current_user
@@ -78,7 +80,33 @@ async def get_chapter_pdf(
 
 
 @router.get("/{textbook_id}/chapters")
-async def list_chapters(textbook_id: int, user: User = Depends(get_current_user)) -> dict:
+async def list_chapters(textbook_id: int, user: User = Depends(get_current_user)) -> list[dict]:
+    with db_session() as db:
+        tb = db.query(Textbook).filter(Textbook.id == textbook_id).first()
+        if not tb:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Textbook not found")
+
+        chapters = (
+            db.query(Chapter)
+            .filter(Chapter.textbook_id == textbook_id)
+            .order_by(Chapter.chapter_number.asc())
+            .all()
+        )
+
+    return [
+        {
+            "chapter_number": int(ch.chapter_number),
+            "chapter_title": str(ch.chapter_title),
+            "cloudinary_url": str(ch.cloudinary_url) if ch.cloudinary_url else None,
+        }
+        for ch in chapters
+    ]
+
+
+@router.get("/{textbook_id}/chapters/ranges")
+async def list_chapters_with_ranges(textbook_id: int, user: User = Depends(get_current_user)) -> dict:
+    """Legacy chapter listing with page ranges."""
+
     with db_session() as db:
         tb = db.query(Textbook).filter(Textbook.id == textbook_id).first()
         if not tb:
@@ -100,6 +128,7 @@ async def list_chapters(textbook_id: int, user: User = Depends(get_current_user)
                 "start_page": int(ch.start_page),
                 "end_page": int(ch.end_page),
                 "page_count": int(ch.page_count),
+                "cloudinary_url": str(ch.cloudinary_url) if ch.cloudinary_url else None,
             }
             for ch in chapters
         ],
@@ -116,6 +145,12 @@ async def get_chapter_pages(textbook_id: int, chapter_key: str, user: User = Dep
         )
         if not ch:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
+
+        if ch.start_page is None or ch.end_page is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Chapter page range is missing. Re-ingest the textbook to rebuild chapter ranges.",
+            )
 
     return {
         "textbook_id": str(textbook_id),
@@ -143,13 +178,25 @@ async def delete_textbook(
     # NOTE: At the moment textbooks are not owned by a user in the DB schema.
     # We require authentication and assume a single-user deployment.
 
+    # Phase 1: read current state (no side effects)
     with db_session() as db:
         tb = db.query(Textbook).filter(Textbook.id == textbook_id).first()
         if not tb:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Textbook not found")
 
+        chapters = db.query(Chapter).filter(Chapter.textbook_id == textbook_id).all()
+        sessions = db.query(Session.id).filter(Session.textbook_id == textbook_id).all()
+
         # Collect cache keys deterministically from DB + chunks.json.
         cache_keys: List[str] = []
+
+        # Chunk keys (from FAISS meta; reliable even if chunks.json is missing)
+        try:
+            store = get_store()
+            for cid in store.chunk_ids_for_textbook(textbook_id):
+                cache_keys.append(chunk_key(int(tb.id), str(cid)))
+        except Exception:
+            logger.exception("Failed reading FAISS metadata for cache key cleanup")
 
         # Chunk keys (from chunks.json on disk)
         try:
@@ -166,50 +213,79 @@ async def delete_textbook(
             logger.exception("Failed reading chunks for cache key cleanup")
 
         # Chapter raw/compressed keys (from chapters table)
-        try:
-            chapters = db.query(Chapter).filter(Chapter.textbook_id == textbook_id).all()
-            for ch in chapters:
-                cache_keys.append(chapter_raw_key(ch.chapter_key))
-                cache_keys.append(chapter_compressed_key(ch.chapter_key))
-        except Exception:
-            logger.exception("Failed reading chapters for cache key cleanup")
+        for ch in chapters:
+            cache_keys.append(chapter_raw_key(ch.chapter_key))
+            cache_keys.append(chapter_compressed_key(ch.chapter_key))
 
-        # Delete DB rows first (so UI doesn't see it), then clean up artifacts.
-        # Chapters + index rows cascade via FK.
-        db.delete(tb)
+        # Session summaries (from sessions table)
+        for (sid,) in sessions:
+            try:
+                cache_keys.append(session_summary_key(int(sid)))
+            except Exception:
+                continue
 
-    # Redis cleanup (best-effort)
+        # Cloudinary public IDs (derived from stored URLs)
+        cloudinary_public_ids: List[str] = []
+        for ch in chapters:
+            pid = public_id_from_url(str(ch.cloudinary_url or ""))
+            if pid:
+                cloudinary_public_ids.append(pid)
+
+    # Phase 2: delete external artifacts (best-effort) while collecting failures.
+    cleanup_errors: List[str] = []
+
+    removed_cloudinary = 0
+    if cloudinary_public_ids:
+        for pid in sorted(set(cloudinary_public_ids)):
+            try:
+                delete_file(pid)
+                removed_cloudinary += 1
+            except CloudinaryStorageError as e:
+                cleanup_errors.append(f"cloudinary:{pid}: {e}")
+
     r = get_redis()
+    removed_redis = 0
     try:
         if cache_keys:
-            await r.delete(*cache_keys)
-    except Exception:
-        logger.exception("Failed deleting redis keys")
+            removed_redis = await r.delete(*sorted(set(cache_keys)))
+    except Exception as e:
+        cleanup_errors.append(f"redis: {e}")
 
-    # FAISS cleanup
     removed_vectors = 0
     try:
         store = get_store()
         removed_vectors = store.delete_textbook(textbook_id)
-    except Exception:
-        logger.exception("Failed deleting textbook vectors")
+    except Exception as e:
+        cleanup_errors.append(f"vectors: {e}")
 
-    # Filesystem cleanup
     removed_files = False
     try:
         root = _textbook_root_dir(textbook_id)
         if root.exists():
             shutil.rmtree(root, ignore_errors=True)
-            removed_files = True
-    except Exception:
-        logger.exception("Failed deleting textbook files")
+            removed_files = not root.exists()
+            if root.exists():
+                cleanup_errors.append("files: failed to remove textbook directory")
+    except Exception as e:
+        cleanup_errors.append(f"files: {e}")
+
+    # Phase 3: delete DB rows (chapters + index + textbook) for consistency.
+    with db_session() as db:
+        # Delete chapters explicitly (even though FK cascade exists) per requirement.
+        db.query(Chapter).filter(Chapter.textbook_id == textbook_id).delete(synchronize_session=False)
+        db.query(TextbookIndex).filter(TextbookIndex.textbook_id == textbook_id).delete(synchronize_session=False)
+        tb = db.query(Textbook).filter(Textbook.id == textbook_id).first()
+        if tb:
+            db.delete(tb)
 
     return {
-        "ok": True,
+        "ok": len(cleanup_errors) == 0,
         "textbookId": textbook_id,
         "removed": {
-            "redisKeys": len(cache_keys),
+            "redisKeys": removed_redis,
+            "cloudinary": removed_cloudinary,
             "vectors": removed_vectors,
             "files": removed_files,
         },
+        "errors": cleanup_errors,
     }

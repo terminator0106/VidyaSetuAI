@@ -23,10 +23,15 @@ class CostBreakdown:
 
 
 def _usd_cost_for(model: str, in_tokens: int, out_tokens: int) -> float:
+    if settings.llm_provider != "openai":
+        return 0.0
+
     # Costs are per 1M tokens.
     if model == settings.openai_model_large:
         return (in_tokens / 1_000_000) * settings.gpt4o_in_usd_per_1m + (out_tokens / 1_000_000) * settings.gpt4o_out_usd_per_1m
-    return (in_tokens / 1_000_000) * settings.gpt4omini_in_usd_per_1m + (out_tokens / 1_000_000) * settings.gpt4omini_out_usd_per_1m
+    if model == settings.openai_model_small:
+        return (in_tokens / 1_000_000) * settings.gpt4omini_in_usd_per_1m + (out_tokens / 1_000_000) * settings.gpt4omini_out_usd_per_1m
+    return 0.0
 
 
 def compute_savings(

@@ -23,6 +23,7 @@ from app.api.ingest import router as ingest_router
 from app.api.ask import router as ask_router
 from app.api.admin import router as admin_router
 from app.api.textbooks import router as textbooks_router
+from app.api.subjects import router as subjects_router
 from app.services.admin_seed import seed_admin_if_configured
 
 
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router, prefix=settings.api_prefix)
+    app.include_router(subjects_router, prefix=settings.api_prefix)
     app.include_router(ingest_router, prefix=settings.api_prefix)
     app.include_router(ask_router, prefix=settings.api_prefix)
     app.include_router(admin_router, prefix=settings.api_prefix)
@@ -83,8 +85,9 @@ def create_app() -> FastAPI:
         except Exception:
             db_ok = False
 
-        redis_ok = await get_redis().ping()
-        return {"status": "ok", "db": {"ok": db_ok}, "redis": {"ok": redis_ok}}
+        r = get_redis()
+        await r.ping()
+        return {"status": "ok", "db": {"ok": db_ok}, "redis": r.health()}
 
     return app
 

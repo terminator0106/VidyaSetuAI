@@ -1,30 +1,35 @@
 """Index-aware PDF chapter splitter.
 
-This module implements strict, deterministic chapter splitting based ONLY on
-the PDF's Index/Table of Contents pages (not outline metadata, not heuristics).
+This module implements chapter splitting based ONLY on the PDF's Index/Table of
+Contents pages.
 
-Pipeline:
-1) Detect index page(s) in the first N pages using keywords + line structure.
-2) Parse chapter titles + start pages using regex fast-path.
-3) If regex parsing fails or is too dense, use Groq LLM to return strict JSON.
-4) Validate + resolve printed-page to PDF-page offsets deterministically.
-5) Compute exact chapter ranges (start..end) and return.
+Requirements (strict):
+- Detect the index page within the first N pages by keyword match.
+- Parse chapter titles and page numbers using regex (no heading/outline guessing).
+- Compute chapter page ranges: end = next_start - 1, last = total pages.
+- Pages before the first chapter are implicitly ignored.
+
+Note: This module intentionally does not use LLMs.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import fitz  # PyMuPDF
 
-from app.config import settings
-from app.services.groq_client import groq_chat_text
 
+_INDEX_KEYWORDS = ("table of contents", "contents", "index")
 
-_INDEX_KEYWORDS = ["table of contents", "contents", "index"]
+# Example pattern:
+#   Chapter 1 .......... 3
+# Captures:
+#   group(1) = chapter title text (including "Chapter 1" prefix)
+#   group(2) = start page number
+_CHAPTER_LINE_RE = re.compile(r"(chapter\s*\d+.*?)\s+(\d+)\s*$", re.IGNORECASE)
+_CHAPTER_NUM_RE = re.compile(r"chapter\s*(\d+)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -54,10 +59,14 @@ class IndexParseError(RuntimeError):
     """Raised when index text cannot be parsed into chapters."""
 
 
-def extract_index_text(pdf_path: str, max_pages: int = 10) -> Tuple[List[int], str]:
-    """Detect index page(s) from the first `max_pages` pages and return their text.
+def extract_index_text(pdf_path: str, max_pages: int = 60) -> Tuple[List[int], str]:
+    """Detect the index page from the first `max_pages` pages.
 
-    Returns (page_numbers_1_based, combined_text).
+    Detection rule (strict): choose the first page whose extracted text contains
+    one of the index keywords: "contents", "table of contents", "index".
+
+    Returns:
+        (page_numbers_1_based, index_text)
     """
 
     doc = fitz.open(pdf_path)
@@ -66,41 +75,59 @@ def extract_index_text(pdf_path: str, max_pages: int = 10) -> Tuple[List[int], s
         if limit <= 0:
             raise IndexNotFoundError("PDF has no pages")
 
-        page_texts: List[Tuple[int, str]] = []
+        # We avoid false positives by requiring a page to look like a ToC:
+        # lots of lines ending in page numbers and dot-leaders/tabs.
+        #
+        # Heuristic:
+        # - Prefer pages with an index keyword AND at least a few index-like lines.
+        # - Only fall back to non-keyword pages if they look *very* index-like.
+        min_hits_keyword = 3
+        min_hits_no_keyword = 8
+
+        best: tuple[int, int, int, str] | None = None  # (page_idx0, score, hits, text)
+
         for i in range(limit):
             page = doc.load_page(i)
             txt = (page.get_text("text") or "").strip()
-            page_texts.append((i + 1, txt))
-
-        scores: List[Tuple[int, int, int]] = []  # (score, page_no, line_hits)
-        for page_no, txt in page_texts:
-            nt = _normalize(txt).lower()
-            keyword_hits = sum(1 for k in _INDEX_KEYWORDS if k in nt)
-            line_hits = _count_index_like_lines(txt)
-            score = keyword_hits * 10 + min(line_hits, 50)
-            scores.append((score, page_no, line_hits))
-
-        best = sorted(scores, key=lambda x: (-x[0], x[1]))[0]
-        best_score, best_page, best_line_hits = best
-        if best_score <= 0 or best_line_hits < 4:
-            raise IndexNotFoundError("Could not detect an index/table of contents page in the first pages")
-
-        # Include subsequent pages if they still look like index pages (multi-page ToC).
-        selected_pages = [best_page]
-        for page_no, txt in page_texts:
-            if page_no <= best_page:
+            if not txt:
                 continue
-            if len(selected_pages) >= 4:
-                break
-            if _count_index_like_lines(txt) >= 4:
-                selected_pages.append(page_no)
-            else:
-                break
 
-        combined = "\n\n".join([t for p, t in page_texts if p in set(selected_pages)]).strip()
-        if not combined:
-            raise IndexNotFoundError("Index pages detected but extracted text was empty")
-        return selected_pages, combined
+            nt = _normalize(txt).lower()
+            hits = _count_index_like_lines(txt)
+
+            has_kw = 1 if any(k in nt for k in _INDEX_KEYWORDS) else 0
+            # Keyword presence is a strong signal.
+            score = hits + (10 * has_kw)
+
+            # Reject weak candidates early.
+            if has_kw and hits < min_hits_keyword:
+                continue
+            if not has_kw and hits < min_hits_no_keyword:
+                continue
+
+            if best is None or score > best[1]:
+                best = (i, score, hits, txt)
+
+        if best is None:
+            raise IndexNotFoundError(
+                f"Could not detect an index/table of contents page in the first {limit} pages"
+            )
+
+        i, _score, _hits, txt = best
+
+        # Best-effort: index/contents often spans multiple pages.
+        pages_1b: List[int] = [i + 1]
+        combined: List[str] = [txt.strip()]
+        for j in range(i + 1, min(limit, i + 5)):
+            nxt = (doc.load_page(j).get_text("text") or "").strip()
+            if not nxt:
+                break
+            if _count_index_like_lines(nxt) < min_hits_keyword:
+                break
+            pages_1b.append(j + 1)
+            combined.append(nxt)
+
+        return pages_1b, "\n".join(combined).strip()
     finally:
         doc.close()
 
@@ -111,37 +138,42 @@ async def parse_index_chapters(
     pdf_path: str,
     index_pages: Sequence[int] | None = None,
 ) -> Tuple[List[ParsedIndexChapter], int]:
-    """Parse index text into chapter list.
+    """Parse index text into a chapter list using regex only.
 
-    Returns (chapters, page_offset) where page_offset maps printed page numbers
-    to PDF page numbers: pdf_page = printed_page + page_offset.
+    The index page numbers are treated as 1-based PDF page numbers.
+
+    Returns:
+        (chapters, page_offset)
+        page_offset is always 0 in this strict mode.
     """
 
-    fast = _parse_index_regex(index_text)
-    chapters: List[ParsedIndexChapter]
-    if _is_reasonable_chapter_list(fast):
-        chapters = fast
-    else:
-        chapters = await await_groq_parse(index_text=index_text)
-
+    chapters = _parse_index_regex(index_text)
     if not chapters:
         raise IndexParseError("No chapters found in index")
 
-    # Resolve printed->PDF page offset.
-    page_offset = resolve_page_offset(
-        chapters,
+    # IMPORTANT: start_page_printed comes from the textbook's printed page
+    # numbers in the ToC, which often do NOT match the PDF page index.
+    # We estimate an offset by reading header/footer page numbers from the PDF.
+    offset = _estimate_pdf_page_offset(
         pdf_path=pdf_path,
-        pdf_page_count=pdf_page_count,
-        skip_pages=set(index_pages or []),
+        pdf_page_count=int(pdf_page_count),
+        chapter_start_pages_printed=[c.start_page_printed for c in chapters],
+        index_pages=index_pages,
     )
 
-    adjusted = [c.start_page_printed + page_offset for c in chapters]
-    if not _is_strictly_ascending(adjusted):
-        raise IndexParseError("Parsed chapters have non-ascending start pages after offset resolution")
-    if any(p < 1 or p > pdf_page_count for p in adjusted):
-        raise IndexParseError("Parsed chapters have out-of-range start pages after offset resolution")
+    starts_pdf = [int(c.start_page_printed) + int(offset) for c in chapters]
+    if any(p < 1 or p > int(pdf_page_count) for p in starts_pdf):
+        raise IndexParseError(
+            "Parsed chapters have out-of-range start pages after applying offset "
+            f"(offset={offset})."
+        )
+    if not _is_strictly_ascending(starts_pdf):
+        raise IndexParseError(
+            "Parsed chapters have non-ascending start pages after applying offset "
+            f"(offset={offset})."
+        )
 
-    return chapters, page_offset
+    return chapters, int(offset)
 
 
 def compute_chapter_ranges(
@@ -172,123 +204,62 @@ def compute_chapter_ranges(
     return out
 
 
-def resolve_page_offset(
-    chapters: Sequence[ParsedIndexChapter],
-    pdf_path: str,
-    pdf_page_count: int,
-    skip_pages: set[int] | None = None,
-) -> int:
-    """Resolve printed-page to PDF-page offset deterministically.
+def _parse_index_regex(index_text: str) -> List[ParsedIndexChapter]:
+    """Parse chapter entries from index text using regex.
 
-    Strategy:
-    1) Prefer offset 0 if valid.
-    2) Try to align first chapter title by searching for the title text in PDF.
-    3) Fall back to a bounded offset sweep [-50, 50] selecting the smallest
-       absolute offset that makes all start pages valid & ascending.
+    Expected ToC line format (example):
+        Chapter 1 .......... 3
+
+    Returns:
+        List of ParsedIndexChapter sorted by chapter_number.
     """
 
-    starts_printed = [c.start_page_printed for c in chapters]
-
-    def is_valid_offset(off: int) -> bool:
-        starts = [p + off for p in starts_printed]
-        return _is_strictly_ascending(starts) and all(1 <= p <= pdf_page_count for p in starts)
-
-    skip_pages = skip_pages or set()
-
-    # Title-based alignment (deterministic). Prefer it when it yields a valid offset,
-    # even if offset=0 is in-range (covers cover/preface offset cases).
-    try:
-        first = chapters[0]
-        hit_page = _find_title_page(
-            pdf_path,
-            title=first.chapter_title,
-            max_pages=min(120, pdf_page_count),
-            skip_pages=skip_pages,
-        )
-        if hit_page is not None:
-            off = int(hit_page) - int(first.start_page_printed)
-            if is_valid_offset(off):
-                return off
-    except Exception:
-        # Ignore and continue to sweep.
-        pass
-
-    if is_valid_offset(0):
-        return 0
-
-    candidates: List[int] = []
-    for off in range(-50, 51):
-        if is_valid_offset(off):
-            candidates.append(off)
-
-    if not candidates:
-        raise IndexParseError("Could not resolve printed-page to PDF-page offset")
-
-    candidates.sort(key=lambda x: (abs(x), x))
-    return candidates[0]
-
-
-def _find_title_page(pdf_path: str, title: str, max_pages: int, skip_pages: set[int]) -> Optional[int]:
-    needle = _normalize(title).lower()
-    if len(needle) < 6:
-        return None
-
-    doc = fitz.open(pdf_path)
-    try:
-        limit = min(int(max_pages), int(doc.page_count))
-        for i in range(limit):
-            page_no = i + 1
-            if page_no in skip_pages:
-                continue
-            txt = doc.load_page(i).get_text("text") or ""
-            hay = _normalize(txt).lower()
-            if needle in hay:
-                return page_no
-        return None
-    finally:
-        doc.close()
-
-
-def _parse_index_regex(index_text: str) -> List[ParsedIndexChapter]:
     lines = [_normalize(ln) for ln in (index_text or "").splitlines()]
     lines = [ln for ln in lines if ln]
-    merged: List[str] = []
-    buf: str = ""
-    for ln in lines:
-        if _ends_with_page_number(ln):
-            if buf:
-                merged.append(_normalize(buf + " " + ln))
-                buf = ""
-            else:
-                merged.append(ln)
-        else:
-            buf = _normalize((buf + " " + ln).strip()) if buf else ln
 
-    # Extract entries.
     entries: List[ParsedIndexChapter] = []
-    for ln in merged:
-        title_part, page_part = _split_title_page(ln)
-        if title_part is None or page_part is None:
-            continue
-        page_num = _parse_page_number(page_part)
-        if page_num is None:
+
+    # Pass 1: strict "Chapter N ... 12" lines.
+    for ln in lines:
+        m = _CHAPTER_LINE_RE.search(ln)
+        if not m:
             continue
 
-        chapter_number, title = _extract_chapter_number_and_title(title_part)
-        if chapter_number is None:
+        raw_title = _normalize(m.group(1))
+        raw_page = m.group(2)
+        try:
+            start_page = int(raw_page)
+        except Exception:
             continue
-        title = title.strip()
+
+        num_match = _CHAPTER_NUM_RE.search(raw_title)
+        if not num_match:
+            continue
+        chapter_number = int(num_match.group(1))
+
+        title = re.sub(r"^chapter\s*\d+\s*[:\-\.]*\s*", "", raw_title, flags=re.IGNORECASE).strip()
         if not title:
-            continue
+            title = raw_title
+
         entries.append(
             ParsedIndexChapter(
-                chapter_number=int(chapter_number),
+                chapter_number=chapter_number,
                 chapter_title=title[:300],
-                start_page_printed=int(page_num),
+                start_page_printed=start_page,
             )
         )
-    # De-dupe by chapter_number keeping first occurrence.
-    dedup: Dict[int, ParsedIndexChapter] = {}
+
+    # Pass 2: flexible ToC lines (regex-only), supports:
+    # - "Unit 1 ... 3"
+    # - "1. Matter ... 10"
+    # - roman numerals for pages
+    if not entries:
+        entries = _parse_index_flexible(lines)
+
+    if not entries:
+        return []
+
+    dedup: dict[int, ParsedIndexChapter] = {}
     for e in entries:
         dedup.setdefault(int(e.chapter_number), e)
     out = list(dedup.values())
@@ -296,104 +267,49 @@ def _parse_index_regex(index_text: str) -> List[ParsedIndexChapter]:
     return out
 
 
-async def await_groq_parse(index_text: str) -> List[ParsedIndexChapter]:
-    if not (settings.groq_api_key or "").strip():
-        raise IndexParseError(
-            "Index parsing is complex and GROQ_API_KEY is not configured. "
-            "Provide GROQ_API_KEY in backend/.env and restart the backend. "
-            "If you run uvicorn from the repo root, ensure the backend package is on PYTHONPATH, "
-            "or run from the backend folder (e.g. `python -m uvicorn main:app --reload`)."
+def _parse_index_flexible(lines: Sequence[str]) -> List[ParsedIndexChapter]:
+    entries: List[ParsedIndexChapter] = []
+
+    for ln in lines:
+        if not ln:
+            continue
+
+        # Only consider lines that resemble ToC entries, otherwise we may
+        # misinterpret syllabus codes like "08.72.10" as page numbers.
+        if not (_ends_with_page_number(ln) and ("." in ln or "\t" in ln or "  " in ln)):
+            continue
+
+        title_part, page_part = _split_title_page(ln)
+        if not title_part or not page_part:
+            continue
+
+        page_num = _parse_page_number(page_part)
+        if page_num is None:
+            continue
+
+        chapter_num, title = _extract_chapter_number_and_title(title_part)
+        if chapter_num is None:
+            continue
+
+        clean_title = (title or "").strip() or title_part
+        entries.append(
+            ParsedIndexChapter(
+                chapter_number=int(chapter_num),
+                chapter_title=str(clean_title)[:300],
+                start_page_printed=int(page_num),
+            )
         )
 
-    schema = (
-        "Return ONLY valid JSON. No markdown, no comments. "
-        "Return an array of objects with keys: chapter_number (int), chapter_title (string), start_page (int)."
-    )
-    system = (
-        "You are a strict JSON-only parser for textbook table-of-contents text. "
-        "Extract ONLY top-level chapters/units/lessons (not sub-sections). "
-        "chapter_number must start at 1 and be integers. "
-        "start_page must be a positive integer representing the printed page number."
-    )
+    if not entries:
+        return []
 
-    messages = [
-        {"role": "system", "content": system + " " + schema},
-        {"role": "user", "content": index_text},
-    ]
-
-    # Groq model IDs can be deprecated; try a small fallback set deterministically.
-    model_candidates = [
-        (settings.groq_model_index_parser or "").strip(),
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-    ]
-    model_candidates = [m for m in model_candidates if m]
-
-    last_err: Exception | None = None
-    raw: str | None = None
-    for model in model_candidates:
-        try:
-            res = await groq_chat_text(model=model, messages=messages, temperature=0.0)
-            raw = res.text.strip()
-            if raw:
-                break
-        except Exception as e:
-            last_err = e
-            msg = str(e)
-            # If a model is decommissioned, try the next candidate.
-            if "model_decommissioned" in msg or "decommissioned" in msg:
-                continue
-            # Other errors (auth/quota/network) should surface immediately.
-            raise
-
-    if not raw:
-        detail = f" Tried models: {', '.join(model_candidates)}."
-        if last_err is not None:
-            raise IndexParseError(f"Groq index parsing failed.{detail} Last error: {last_err}")
-        raise IndexParseError(f"Groq index parsing failed.{detail}")
-
-    # Hard validation: JSON only.
-    try:
-        data = json.loads(raw)
-    except Exception as e:
-        raise IndexParseError("Groq did not return valid JSON") from e
-
-    if not isinstance(data, list):
-        raise IndexParseError("Groq JSON must be a list")
-
-    out: List[ParsedIndexChapter] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        try:
-            cn = int(item.get("chapter_number"))
-            title = str(item.get("chapter_title") or "").strip()
-            sp = int(item.get("start_page"))
-        except Exception:
-            continue
-        if cn < 1 or sp < 1 or not title:
-            continue
-        out.append(ParsedIndexChapter(chapter_number=cn, chapter_title=title[:300], start_page_printed=sp))
-
+    # De-dup and keep the first occurrence.
+    dedup: dict[int, ParsedIndexChapter] = {}
+    for e in entries:
+        dedup.setdefault(int(e.chapter_number), e)
+    out = list(dedup.values())
     out.sort(key=lambda x: x.chapter_number)
     return out
-
-
-def _is_reasonable_chapter_list(chapters: List[ParsedIndexChapter]) -> bool:
-    if len(chapters) < 2:
-        return False
-    if len(chapters) > 60:
-        return False
-    nums = [c.chapter_number for c in chapters]
-    if nums[0] != 1:
-        return False
-    # Require monotonic increasing chapter numbers.
-    if not _is_strictly_ascending(nums):
-        return False
-    # Require monotonic increasing printed pages.
-    if not _is_strictly_ascending([c.start_page_printed for c in chapters]):
-        return False
-    return True
 
 
 def _count_index_like_lines(text: str) -> int:
@@ -409,6 +325,116 @@ def _count_index_like_lines(text: str) -> int:
 
 def _ends_with_page_number(line: str) -> bool:
     return bool(re.search(r"(?:\s|\.)+([0-9]{1,4}|[ivxlcdmIVXLCDM]{1,8})\s*$", line))
+
+
+def _extract_printed_page_number_from_page(page: fitz.Page) -> Optional[int]:
+    """Try to read the printed page number from header/footer.
+
+    We look at the top/bottom bands of the page and try to find a line whose
+    content is just a page number (or contains an isolated page number token).
+    """
+
+    try:
+        rect = page.rect
+        w = float(rect.width)
+        h = float(rect.height)
+        if w <= 0 or h <= 0:
+            return None
+
+        # Header: top 15%, Footer: bottom 15%
+        header = page.get_text(
+            "text",
+            clip=fitz.Rect(0, 0, w, h * 0.15),
+            flags=fitz.TEXT_PRESERVE_LIGATURES,
+        )
+        footer = page.get_text(
+            "text",
+            clip=fitz.Rect(0, h * 0.85, w, h),
+            flags=fitz.TEXT_PRESERVE_LIGATURES,
+        )
+        blob = "\n".join([header or "", footer or ""]).strip()
+        if not blob:
+            return None
+
+        # Prefer lines that are only a number.
+        for ln in [x.strip() for x in blob.splitlines() if x.strip()]:
+            if re.fullmatch(r"\d{1,4}", ln):
+                return int(ln)
+
+        # Fallback: find isolated numeric tokens, but avoid syllabus-like codes
+        # such as 08.72.10 by requiring token boundaries.
+        m = re.search(r"(?<![0-9\.])(\d{1,4})(?![0-9\.])", blob)
+        if m:
+            return int(m.group(1))
+    except Exception:
+        return None
+
+    return None
+
+
+def _mode_int(values: Sequence[int]) -> Optional[int]:
+    if not values:
+        return None
+    counts: dict[int, int] = {}
+    for v in values:
+        counts[int(v)] = counts.get(int(v), 0) + 1
+    # Highest count; deterministic tie-break by smaller abs value.
+    return max(counts.items(), key=lambda kv: (kv[1], -abs(kv[0]), -kv[0]))[0]
+
+
+def _estimate_pdf_page_offset(
+    *,
+    pdf_path: str,
+    pdf_page_count: int,
+    chapter_start_pages_printed: Sequence[int],
+    index_pages: Sequence[int] | None,
+    max_scan_pages: int = 120,
+) -> int:
+    """Estimate offset mapping printed textbook page numbers -> PDF pages.
+
+    We assume a mostly constant offset for the main content:
+        pdf_page ~= printed_page + offset
+
+    We compute offset by scanning header/footer printed page numbers in the PDF
+    and taking the mode of (pdf_page_index - printed_page).
+
+    If no reliable mapping is found, returns 0.
+    """
+
+    _ = index_pages  # reserved for future improvements
+
+    total = int(pdf_page_count)
+    limit = min(int(max_scan_pages), total)
+    if limit <= 0:
+        return 0
+
+    # Only consider printed pages in a plausible range around chapter starts.
+    # This avoids grabbing random numbers from the foreword/syllabus pages.
+    printed = [int(p) for p in chapter_start_pages_printed if int(p) > 0]
+    if printed:
+        min_p = min(printed)
+        max_p = max(printed)
+    else:
+        min_p, max_p = 1, total
+
+    diffs: list[int] = []
+
+    doc = fitz.open(pdf_path)
+    try:
+        for pdf_page in range(1, limit + 1):
+            page = doc.load_page(pdf_page - 1)
+            pnum = _extract_printed_page_number_from_page(page)
+            if pnum is None:
+                continue
+            if pnum < max(1, min_p - 10) or pnum > (max_p + 10):
+                continue
+            diffs.append(int(pdf_page) - int(pnum))
+    finally:
+        doc.close()
+
+    # If we couldn't detect any printed numbers, fall back.
+    off = _mode_int(diffs)
+    return int(off) if off is not None else 0
 
 
 def _split_title_page(line: str) -> Tuple[Optional[str], Optional[str]]:

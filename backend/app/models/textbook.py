@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -20,6 +20,14 @@ class Textbook(Base):
     __tablename__ = "textbooks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # Optional link to a persisted subject (string id, user-owned).
+    subject_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("subjects.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     board: Mapped[str | None] = mapped_column(String(120), nullable=True)

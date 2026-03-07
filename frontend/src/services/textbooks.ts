@@ -18,8 +18,21 @@ export interface TextbookChaptersResponse {
 }
 
 export async function getTextbookChapters(textbookId: string | number): Promise<TextbookChaptersResponse> {
-    const res = await api.get(`/textbooks/${textbookId}/chapters`);
+    const res = await api.get(`/textbooks/${textbookId}/chapters/ranges`);
     return res.data as TextbookChaptersResponse;
+}
+
+export interface TextbookChapterCloudinaryItem {
+    chapter_number: number;
+    chapter_title: string;
+    cloudinary_url: string | null;
+}
+
+export async function getTextbookChaptersCloudinary(
+    textbookId: string | number,
+): Promise<TextbookChapterCloudinaryItem[]> {
+    const res = await api.get(`/textbooks/${textbookId}/chapters`);
+    return res.data as TextbookChapterCloudinaryItem[];
 }
 
 export interface ChapterPagesResponse {

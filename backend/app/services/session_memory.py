@@ -38,7 +38,7 @@ async def update_summary(session_id: int, question_en: str, answer_en: str) -> s
         },
     ]
 
-    res = await chat_text(model=settings.openai_model_small, messages=messages, temperature=0.0)
+    res = await chat_text(model=settings.model_small, messages=messages, temperature=0.0)
     summary = res.text.strip()
     if summary:
         await r.set(session_summary_key(session_id), summary)

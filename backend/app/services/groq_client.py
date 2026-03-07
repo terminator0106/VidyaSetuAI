@@ -1,8 +1,7 @@
 """Groq client (OpenAI-compatible).
 
-Usage rules (enforced by call sites):
-- This client must only be used for index parsing during ingestion.
-- Responses must be strict JSON only.
+This is a thin wrapper around Groq's OpenAI-compatible chat completions endpoint.
+Call sites are responsible for prompt discipline (e.g., strict JSON when needed).
 """
 
 from __future__ import annotations
@@ -33,7 +32,12 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-async def groq_chat_text(model: str, messages: List[Dict[str, str]], temperature: float = 0.0) -> GroqResult:
+async def groq_chat_text(
+    model: str,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.0,
+    max_tokens: int | None = None,
+) -> GroqResult:
     """Run a chat completion against Groq's OpenAI-compatible endpoint."""
 
     client = _get_client()
@@ -41,6 +45,7 @@ async def groq_chat_text(model: str, messages: List[Dict[str, str]], temperature
         model=model,
         messages=messages,
         temperature=temperature,
+        max_tokens=max_tokens,
     )
     choice = resp.choices[0]
     text = (choice.message.content or "").strip()
