@@ -2,6 +2,18 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import * as SubjectsApi from '@/services/subjects';
 
+// Create a safe storage that works on server and client
+const safeStorage = createJSONStorage(() => {
+  if (typeof window === 'undefined') {
+    return {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+    };
+  }
+  return localStorage;
+});
+
 export interface Chapter {
   id: string;
   name: string;
@@ -148,7 +160,7 @@ export const useLearningStore = create<LearningState>()(
     }),
     {
       name: 'vidyasetu_subjects_v1',
-      storage: createJSONStorage(() => localStorage),
+      storage: safeStorage,
       partialize: (state) => ({
         subjects: state.subjects.map((s) => ({
           id: s.id,

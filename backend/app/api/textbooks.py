@@ -93,14 +93,14 @@ async def list_chapters(textbook_id: int, user: User = Depends(get_current_user)
             .all()
         )
 
-    return [
-        {
-            "chapter_number": int(ch.chapter_number),
-            "chapter_title": str(ch.chapter_title),
-            "cloudinary_url": str(ch.cloudinary_url) if ch.cloudinary_url else None,
-        }
-        for ch in chapters
-    ]
+        return [
+            {
+                "chapter_number": int(ch.chapter_number),
+                "chapter_title": str(ch.chapter_title),
+                "cloudinary_url": str(ch.cloudinary_url) if ch.cloudinary_url else None,
+            }
+            for ch in chapters
+        ]
 
 
 @router.get("/{textbook_id}/chapters/ranges")
@@ -119,20 +119,20 @@ async def list_chapters_with_ranges(textbook_id: int, user: User = Depends(get_c
             .all()
         )
 
-    return {
-        "textbook_id": str(textbook_id),
-        "chapters": [
-            {
-                "id": ch.chapter_key,
-                "title": ch.chapter_title,
-                "start_page": int(ch.start_page),
-                "end_page": int(ch.end_page),
-                "page_count": int(ch.page_count),
-                "cloudinary_url": str(ch.cloudinary_url) if ch.cloudinary_url else None,
-            }
-            for ch in chapters
-        ],
-    }
+        return {
+            "textbook_id": str(textbook_id),
+            "chapters": [
+                {
+                    "id": ch.chapter_key,
+                    "title": ch.chapter_title,
+                    "start_page": int(ch.start_page),
+                    "end_page": int(ch.end_page),
+                    "page_count": int(ch.page_count),
+                    "cloudinary_url": str(ch.cloudinary_url) if ch.cloudinary_url else None,
+                }
+                for ch in chapters
+            ],
+        }
 
 
 @router.get("/{textbook_id}/chapters/{chapter_key}/pages")
@@ -152,11 +152,14 @@ async def get_chapter_pages(textbook_id: int, chapter_key: str, user: User = Dep
                 detail="Chapter page range is missing. Re-ingest the textbook to rebuild chapter ranges.",
             )
 
+        start_page = int(ch.start_page)
+        end_page = int(ch.end_page)
+
     return {
         "textbook_id": str(textbook_id),
         "chapter_id": chapter_key,
-        "start_page": int(ch.start_page),
-        "end_page": int(ch.end_page),
+        "start_page": start_page,
+        "end_page": end_page,
         "pdf_url": f"/api/textbooks/{textbook_id}/chapters/{chapter_key}/pdf",
     }
 

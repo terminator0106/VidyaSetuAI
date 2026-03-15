@@ -16,6 +16,8 @@ from typing import Iterable, List, Tuple
 
 import fitz  # PyMuPDF
 
+from app.services.pdf_extraction import DEFAULT_OCR_LANGS, extract_page_text
+
 
 @dataclass(frozen=True)
 class PageText:
@@ -65,9 +67,10 @@ def extract_pages(pdf_path: str) -> List[PageText]:
         except Exception:
             heading_candidates = []
 
-        # Always extract full text (works even if rich extraction fails).
-        raw_text = page.get_text("text") or ""
-        text_lines = [_normalize_line(x) for x in raw_text.splitlines()]
+        # Always extract full text. Use OCR fallback for multilingual/scanned pages.
+        extracted = extract_page_text(page, min_chars=40, ocr_langs=DEFAULT_OCR_LANGS)
+        raw_text = extracted.text
+        text_lines = [_normalize_line(x) for x in (raw_text or "").splitlines()]
         text = "\n".join([ln for ln in text_lines if ln])
 
         pages.append(PageText(page_number=i + 1, text=text, heading_candidates=_dedupe(heading_candidates)))

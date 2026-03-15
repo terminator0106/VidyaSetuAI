@@ -26,6 +26,7 @@ from app.redis_client import get_redis
 from app.services.cache_keys import chapter_compressed_key, chapter_raw_key, chunk_key
 from app.services.embedder import embed_texts
 from app.services.pdf_parser import extract_pdf_page_count
+from app.services.pdf_extraction import extract_text_by_page_range
 from app.services.index_splitter import (
     ChapterRange,
     IndexNotFoundError,
@@ -38,6 +39,7 @@ from app.services.cloudinary_storage import CloudinaryStorageError, upload_pdf
 from app.services.textbook_store import build_structure, pdf_path, write_chunks
 from app.services.vector_store import VectorMeta, get_store
 from app.services.llm_client import chat_text
+from app.services.text_translation import translate_chunk_to_english
 from app.config import settings
 from app.utils.security import get_current_user
 
@@ -119,7 +121,7 @@ def _write_chapter_pdfs_to_tmp(
 ) -> List[Path]:
     """Generate per-chapter PDFs into `/tmp/chapters/`.
 
-    Naming convention: `{subject}_chp{chapter_number}.pdf`.
+    Naming convention: `{subject}_ch{chapter_number}.pdf`.
 
     Returns:
         List of written file paths, in chapter order.
@@ -138,7 +140,7 @@ def _write_chapter_pdfs_to_tmp(
             start = max(1, min(total, int(r.start_page)))
             end = max(start, min(total, int(r.end_page)))
 
-            out_path = out_dir / f"{subject}_chp{int(r.chapter_number)}.pdf"
+            out_path = out_dir / f"{subject}_ch{int(r.chapter_number)}.pdf"
             new_doc = fitz.open()
             try:
                 new_doc.insert_pdf(doc, from_page=start - 1, to_page=end - 1)
@@ -154,23 +156,16 @@ def _write_chapter_pdfs_to_tmp(
 
 
 def _extract_text_by_page_range(pdf_file: Path, start_page: int, end_page: int) -> List[tuple[int, str]]:
-    """Extract plain text for each page in [start_page, end_page] inclusive."""
+    """Extract text for each page in [start_page, end_page] inclusive.
 
-    import fitz
+    Uses OCR fallback for multilingual/scanned PDFs.
+    """
 
-    doc = fitz.open(str(pdf_file))
-    try:
-        total = int(doc.page_count)
-        start = max(1, min(total, int(start_page)))
-        end = max(start, min(total, int(end_page)))
-        out: List[tuple[int, str]] = []
-        for p in range(start, end + 1):
-            page = doc.load_page(p - 1)
-            txt = (page.get_text("text") or "").strip()
-            out.append((p, txt))
-        return out
-    finally:
-        doc.close()
+    return extract_text_by_page_range(
+        str(pdf_file),
+        start_page=int(start_page),
+        end_page=int(end_page),
+    )
 
 
 async def _handle_ingest(
@@ -218,11 +213,17 @@ async def _handle_ingest(
 
         # STEP 1: Detect index pages and extract raw text.
         try:
-            index_pages, index_text = extract_index_text(str(out_pdf), max_pages=60)
+            index_pages, index_text = extract_index_text(str(out_pdf), max_pages=25)
         except IndexNotFoundError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Index/Table of Contents not found: {e}",
+            )
+        except RuntimeError as e:
+            # Typically indicates unreadable PDF text + OCR not available/failed.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
             )
 
         # STEP 2: Parse index into chapters (index-only; regex-only).
@@ -252,7 +253,6 @@ async def _handle_ingest(
             )
 
         subject_slug = _sanitize_component(subjectId, default="subject")
-        textbook_slug = _sanitize_component(textbookName or tb.title, default=f"textbook_{textbook_id}")
 
         tmp_paths: List[Path] = []
         try:
@@ -260,10 +260,9 @@ async def _handle_ingest(
 
             for r in ranges:
                 chapter_number = int(r.chapter_number)
-                chapter_name = f"chapter{chapter_number}"
-                public_id = f"{subject_slug}/{textbook_slug}/{chapter_name}"
+                public_id = f"{subject_slug}_ch{chapter_number}"
 
-                local_path = _tmp_chapters_dir() / f"{_sanitize_subject(subjectId)}_chp{chapter_number}.pdf"
+                local_path = _tmp_chapters_dir() / f"{_sanitize_subject(subjectId)}_ch{chapter_number}.pdf"
                 try:
                     url = upload_pdf(file_path=str(local_path), public_id=public_id)
                     chapter_pdf_metadata.append(
@@ -364,8 +363,15 @@ async def _handle_ingest(
         from app.services.chunker import Chunk
 
         chunks: List[Chunk] = []
+        original_texts: List[str] = []
         for ch in chapters_db:
-            pages = _extract_text_by_page_range(out_pdf, ch.start_page, ch.end_page)
+            try:
+                pages = _extract_text_by_page_range(out_pdf, ch.start_page, ch.end_page)
+            except RuntimeError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e),
+                )
             # Deterministic chunking by fixed page windows (no token-based chunking).
             window = 2
             for i in range(0, len(pages), window):
@@ -374,9 +380,12 @@ async def _handle_ingest(
                     continue
                 p_start = group[0][0]
                 p_end = group[-1][0]
-                text = "\n\n".join([t for _, t in group if (t or "").strip()]).strip()
-                if not text:
+                text_original = "\n\n".join([t for _, t in group if (t or "").strip()]).strip()
+                if not text_original:
                     continue
+
+                text_en = await translate_chunk_to_english(text=text_original)
+                text = (text_en or "").strip() or text_original
                 topic_key = f"{ch.chapter_key}:p{p_start}-{p_end}"
                 chunk_id = f"{topic_key}:c1"
                 chunks.append(
@@ -391,11 +400,12 @@ async def _handle_ingest(
                         text=text,
                     )
                 )
+                original_texts.append(text_original)
 
         if not chunks:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No extractable text found in chapter page ranges")
 
-        chunks_file = write_chunks(textbook_id, chunks)
+        chunks_file = write_chunks(textbook_id, chunks, original_texts=original_texts)
         tb.pdf_path = str(out_pdf)
         tb.chunks_path = str(chunks_file)
         structure = build_structure(chunks)

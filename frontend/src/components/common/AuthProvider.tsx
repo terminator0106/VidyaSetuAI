@@ -1,3 +1,5 @@
+'use client'
+
 import { ReactNode, useEffect } from 'react';
 import { useAuthStore } from '@/store/authStore';
 import { useLearningStore } from '@/store/learningStore';
@@ -11,16 +13,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const clear = useLearningStore((s) => s.clear);
 
     useEffect(() => {
-        void initialize();
+        try {
+            void initialize();
+        } catch (e) {
+            console.error('Auth initialization error:', e);
+        }
     }, [initialize]);
 
     useEffect(() => {
         if (!isInitialized) return;
-        if (!isAuthenticated) {
-            clear();
-            return;
+        try {
+            if (!isAuthenticated) {
+                clear();
+                return;
+            }
+            void loadSubjects();
+        } catch (e) {
+            console.error('Learning store error:', e);
         }
-        void loadSubjects();
     }, [isAuthenticated, isInitialized, clear, loadSubjects]);
 
     return <>{children}</>;

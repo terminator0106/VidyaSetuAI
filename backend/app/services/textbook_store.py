@@ -90,8 +90,11 @@ def split_pdf_by_chapters(
         doc.close()
 
 
-def write_chunks(textbook_id: int, chunks: List[Chunk]) -> Path:
+def write_chunks(textbook_id: int, chunks: List[Chunk], *, original_texts: List[str] | None = None) -> Path:
     path = chunks_path(textbook_id)
+    if original_texts is not None and len(original_texts) != len(chunks):
+        raise ValueError("original_texts length must match chunks length")
+
     payload = {
         "textbook_id": textbook_id,
         "chunks": [
@@ -104,12 +107,14 @@ def write_chunks(textbook_id: int, chunks: List[Chunk]) -> Path:
                 "page_start": c.page_start,
                 "page_end": c.page_end,
                 "text": c.text,
+                "text_original": (original_texts[i] if original_texts is not None else None),
             }
-            for c in chunks
+            for i, c in enumerate(chunks)
         ],
     }
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     _chunk_map.cache_clear()
+    _chunk_map_original.cache_clear()
     return path
 
 
@@ -128,6 +133,25 @@ def _chunk_map(textbook_id: int) -> Dict[str, str]:
 
 def load_chunk_text(textbook_id: int, chunk_id: str) -> str:
     return _chunk_map(textbook_id).get(chunk_id, "")
+
+
+@lru_cache(maxsize=64)
+def _chunk_map_original(textbook_id: int) -> Dict[str, str]:
+    path = chunks_path(textbook_id)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    out: Dict[str, str] = {}
+    for c in raw.get("chunks", []):
+        cid = str(c.get("chunk_id"))
+        text = c.get("text_original")
+        if cid and isinstance(text, str):
+            out[cid] = text
+    return out
+
+
+def load_chunk_text_original(textbook_id: int, chunk_id: str) -> str:
+    """Return original (non-translated) chunk text if present."""
+
+    return _chunk_map_original(textbook_id).get(chunk_id, "")
 
 
 def build_structure(chunks: List[Chunk]) -> dict:

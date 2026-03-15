@@ -1,15 +1,22 @@
-"""Lightweight language detection for Indian scripts.
+"""Lightweight language detection.
 
-We avoid heavy dependencies to keep deployments simple.
-The detector identifies script families (Hindi/Marathi -> Devanagari, Bengali,
-Tamil, Telugu, Kannada, Malayalam, Gujarati, Punjabi Gurmukhi, Odia).
+Primary: `langdetect` if installed (helps distinguish Hindi vs Marathi).
+Fallback: script-range heuristics for Indian scripts.
+Final fallback: Groq model classification if still uncertain.
 
-If no non-Latin script is found, we treat as English.
+If no signal is found, we treat as English.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+import logging
+
+from app.config import settings
+from app.services.llm_client import chat_text
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,28 @@ _RANGES = [
 
 def detect_language(text: str) -> Language:
     text = text or ""
+
+    # 1) Try langdetect if installed.
+    try:
+        from langdetect import detect_langs  # type: ignore
+
+        # langdetect expects some length.
+        if len(text.strip()) >= 10:
+            langs = detect_langs(text)
+            if langs:
+                top = langs[0]
+                code = str(getattr(top, "lang", "")).lower()
+                prob = float(getattr(top, "prob", 0.0))
+                if code in {"en", "hi", "mr", "gu"} and prob >= 0.70:
+                    name = {
+                        "en": "English",
+                        "hi": "Hindi",
+                        "mr": "Marathi",
+                        "gu": "Gujarati",
+                    }[code]
+                    return Language(code=code, name=name)
+    except Exception:
+        pass
     counts = {code: 0 for code, _, _, _ in _RANGES}
     total = 0
 
@@ -50,3 +79,39 @@ def detect_language(text: str) -> Language:
     code = max(counts.items(), key=lambda x: x[1])[0]
     name = next(n for c, n, _, _ in _RANGES if c == code)
     return Language(code=code, name=name)
+
+
+async def detect_language_async(text: str) -> Language:
+    """Async language detection with Groq fallback.
+
+    Use this in API routes where we can afford an LLM call when needed.
+    """
+
+    base = detect_language(text)
+
+    # Script heuristic can't separate Hindi vs Marathi (both Devanagari).
+    if base.code != "hi":
+        return base
+
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": "Identify the language of the text. Output exactly one code: en, hi, mr, gu.",
+            },
+            {"role": "user", "content": (text or "").strip()[:2000]},
+        ]
+        res = await chat_text(model=settings.model_small, messages=messages, temperature=0.0, max_tokens=10)
+        out = (res.text or "").strip().lower()
+        if out in {"en", "hi", "mr", "gu"}:
+            name2 = {
+                "en": "English",
+                "hi": "Hindi",
+                "mr": "Marathi",
+                "gu": "Gujarati",
+            }[out]
+            return Language(code=out, name=name2)
+    except Exception as e:
+        logger.debug("Groq language fallback failed", extra={"extra": {"err": str(e)}})
+
+    return base

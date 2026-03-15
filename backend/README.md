@@ -30,7 +30,15 @@ From the `backend/` folder:
 
 Minimum required:
 - `JWT_SECRET`
-- `OPENAI_API_KEY`
+
+LLM provider (pick one):
+- Default (`LLM_PROVIDER=groq`): set `GROQ_API_KEY`
+- If `LLM_PROVIDER=openai`: set `OPENAI_API_KEY`
+
+PDF ingestion storage (required for ingest):
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
 
 Local defaults are already set for:
 - `POSTGRES_HOST=localhost`
@@ -109,3 +117,12 @@ If you need to override the backend URL, set in the frontend:
 
 ## Chapter splitting accuracy
 Chapters are split using the Table of Contents (printed page numbers). The backend auto-detects the offset between printed page numbers (header/footer) and the underlying PDF page index, so chapter ranges align with the page numbers printed on the textbook pages.
+
+## OCR for scanned / multilingual PDFs (Windows)
+Some textbooks (especially Hindi/Marathi/Gujarati scans) have little or unreadable embedded text. In that case ingestion uses an OCR fallback via `pytesseract`, which requires the **system Tesseract** binary.
+
+Checklist:
+- Ensure `tesseract.exe` is installed and available on your `PATH` (verify with `where tesseract`).
+- Ensure language packs for `eng`, `hin`, `mar`, `guj` are installed/available in Tesseract's `tessdata`.
+
+If Tesseract (or those language packs) are missing, ingest will fail with a descriptive error telling you OCR is required.

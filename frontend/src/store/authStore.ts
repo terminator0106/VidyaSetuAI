@@ -51,9 +51,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   initialize: async () => {
     try {
       const res = await api.get('/auth/session');
-      const user: User = res.data.user;
-      set({ user, isAuthenticated: true, isInitialized: true });
-    } catch {
+      const user: User = res.data?.user;
+      if (user) {
+        set({ user, isAuthenticated: true, isInitialized: true });
+      } else {
+        set({ user: null, isAuthenticated: false, isInitialized: true });
+      }
+    } catch (e) {
+      // Silent fail on initialization - user not logged in
       set({ user: null, isAuthenticated: false, isInitialized: true });
     }
   },
@@ -62,10 +67,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ isLoading: true, error: null });
     try {
       const res = await api.post('/auth/login', { email, password });
-      const user: User = res.data.user;
-      set({ user, isAuthenticated: true, isLoading: false });
+      const user: User = res.data?.user;
+      if (user) {
+        set({ user, isAuthenticated: true, isLoading: false });
+      } else {
+        set({ error: 'Login failed. Please try again.', isLoading: false });
+      }
     } catch (e: unknown) {
-      set({ error: getErrorMessage(e), isLoading: false });
+      const msg = getErrorMessage(e);
+      set({ error: msg, isLoading: false });
     }
   },
 
@@ -73,11 +83,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ isLoading: true, error: null });
     try {
       const res = await api.post('/auth/signup', { email, password });
-      const user: User = res.data.user;
-      localStorage.removeItem('onboarding_complete');
-      set({ user, isAuthenticated: true, isLoading: false });
+      const user: User = res.data?.user;
+      if (user) {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('onboarding_complete');
+        }
+        set({ user, isAuthenticated: true, isLoading: false });
+      } else {
+        set({ error: 'Signup failed. Please try again.', isLoading: false });
+      }
     } catch (e: unknown) {
-      set({ error: getErrorMessage(e), isLoading: false });
+      const msg = getErrorMessage(e);
+      set({ error: msg, isLoading: false });
     }
   },
 

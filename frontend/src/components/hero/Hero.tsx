@@ -1,8 +1,8 @@
 import { motion } from 'framer-motion';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { HeroBackground } from './HeroBackground';
 import { useAuthStore } from '@/store/authStore';
-import { useNavigate } from 'react-router-dom';
 
 interface HeroProps {
   onSignupClick: () => void;
@@ -10,11 +10,11 @@ interface HeroProps {
 
 export function Hero({ onSignupClick }: HeroProps) {
   const { isAuthenticated } = useAuthStore();
-  const navigate = useNavigate();
+  const router = useRouter();
 
   const handleStart = () => {
     if (isAuthenticated) {
-      navigate('/dashboard');
+      router.push('/dashboard');
     } else {
       onSignupClick();
     }

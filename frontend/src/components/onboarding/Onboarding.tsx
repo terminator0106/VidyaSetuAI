@@ -38,7 +38,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
-      localStorage.setItem('onboarding_complete', 'true');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('onboarding_complete', 'true');
+      }
       onComplete();
     }
   };
@@ -88,7 +90,12 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
         {step < steps.length - 1 && (
           <button
-            onClick={() => { localStorage.setItem('onboarding_complete', 'true'); onComplete(); }}
+            onClick={() => {
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('onboarding_complete', 'true');
+              }
+              onComplete();
+            }}
             className="mt-4 block w-full text-center text-sm text-muted-foreground hover:text-foreground"
           >
             Skip for now

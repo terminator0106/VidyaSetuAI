@@ -31,7 +31,7 @@ from app.redis_client import get_redis
 from app.services.cache_keys import chunk_key
 from app.services.compressor import compress_chunks
 from app.services.cost_tracker import compute_savings
-from app.services.language_detector import detect_language
+from app.services.language_detector import detect_language_async
 from app.services.llm_client import chat_text, translate_from_english, translate_to_english
 from app.services.answer_constraints import infer_answer_constraints
 from app.services.retriever import retrieve_top_k_for_chapter
@@ -193,7 +193,7 @@ async def ask(req: AskRequest, user: User = Depends(get_current_user)) -> dict:
 
     session_id = await _get_or_create_session_id(user, req)
 
-    lang = detect_language(req.question)
+    lang = await detect_language_async(req.question)
     question_en = req.question
     translation_usage = None
 

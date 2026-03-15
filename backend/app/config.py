@@ -110,6 +110,12 @@ class Settings(BaseSettings):
         description="Which provider to use for chat/compression: groq|openai",
     )
 
+    # Debugging
+    index_debug: bool = Field(
+        default=False,
+        description="Log OCR/index detection diagnostics during ingest when True (INDEX_DEBUG=true).",
+    )
+
     # OpenAI (optional if llm_provider=groq)
     openai_api_key: str | None = Field(default=None)
     openai_model_large: str = "gpt-4o"
