@@ -1,1 +1,50 @@
-{}
+{
+  "app\\page.tsx -> @/components/auth/LoginModal": {
+    "id": "app\\page.tsx -> @/components/auth/LoginModal",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_auth_LoginModal_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/auth/SignupModal": {
+    "id": "app\\page.tsx -> @/components/auth/SignupModal",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_auth_SignupModal_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/features/Features": {
+    "id": "app\\page.tsx -> @/components/features/Features",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_features_Features_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/features/HowItWorks": {
+    "id": "app\\page.tsx -> @/components/features/HowItWorks",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_features_HowItWorks_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/footer/Footer": {
+    "id": "app\\page.tsx -> @/components/footer/Footer",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_footer_Footer_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/hero/Hero": {
+    "id": "app\\page.tsx -> @/components/hero/Hero",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_hero_Hero_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/navbar/Navbar": {
+    "id": "app\\page.tsx -> @/components/navbar/Navbar",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_navbar_Navbar_tsx.js"
+    ]
+  },
+  "app\\page.tsx -> @/components/onboarding/Onboarding": {
+    "id": "app\\page.tsx -> @/components/onboarding/Onboarding",
+    "files": [
+      "static/chunks/_app-pages-browser_src_components_onboarding_Onboarding_tsx.js"
+    ]
+  }
+}

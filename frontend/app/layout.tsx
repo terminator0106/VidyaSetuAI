@@ -18,12 +18,12 @@ export default function RootLayout({
     children: React.ReactNode
 }) {
     return (
-        <html lang="en" suppressHydrationWarning>
+        <html lang="en" suppressHydrationWarning className="dark">
             <head>
                 <meta charSet="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
             </head>
-            <body suppressHydrationWarning>
+            <body suppressHydrationWarning className="dark bg-slate-950">
                 <Providers>
                     {children}
                     <Toaster />

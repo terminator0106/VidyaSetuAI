@@ -26,58 +26,110 @@ export function Navbar({ onLoginClick, onSignupClick }: NavbarProps) {
       initial={{ y: -20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ duration: 0.5 }}
-      className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-background/90 backdrop-blur-md"
+      className="fixed top-0 left-0 right-0 z-50 border-b border-indigo-500/20 bg-black/40 backdrop-blur-xl"
     >
       <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-6">
-        <a href="/" className="flex items-center gap-3 font-bold text-foreground">
+        <motion.a
+          href="/"
+          className="flex items-center gap-3 font-bold text-white"
+          whileHover={{ scale: 1.05 }}
+          transition={{ type: 'spring', stiffness: 400 }}
+        >
           <span className="text-3xl">🎓</span>
           <span className="text-2xl" style={{ fontFamily: "'Playfair Display', serif" }}>Vidyasetu</span>
-        </a>
+        </motion.a>
 
         {/* Desktop links */}
         <div className="hidden items-center gap-8 md:flex">
           {links.map((l) => (
-            <a
+            <motion.a
               key={l.label}
               href={l.href}
-              className="text-base font-medium text-muted-foreground transition-colors hover:text-foreground"
+              className="relative text-base font-medium text-slate-300 transition-colors hover:text-white group"
+              whileHover={{ scale: 1.05 }}
             >
               {l.label}
-            </a>
+              <motion.div
+                className="absolute bottom-0 left-0 h-0.5 bg-gradient-to-r from-indigo-500 to-cyan-500"
+                initial={{ width: 0 }}
+                whileHover={{ width: '100%' }}
+                transition={{ duration: 0.3 }}
+              />
+            </motion.a>
           ))}
         </div>
 
-        <div className="hidden items-center gap-4 md:flex">
-          <Button variant="ghost" size="icon" className="h-10 w-10" onClick={toggle} aria-label="Toggle theme">
-            {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-          </Button>
+        <div className="hidden items-center gap-3 md:flex">
+          <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10 text-slate-400 hover:text-white hover:bg-white/10 transition-colors rounded-lg"
+              onClick={toggle}
+              aria-label="Toggle theme"
+            >
+              {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            </Button>
+          </motion.div>
           {isAuthenticated ? (
             <>
-              <Button variant="ghost" className="text-base px-5 h-10" asChild>
-                <a href="/dashboard">Dashboard</a>
-              </Button>
-              <Button variant="outline" className="text-base px-5 h-10" onClick={logout}>
-                Log out
-              </Button>
+              <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                <Button
+                  variant="ghost"
+                  className="text-base px-5 h-10 text-slate-300 hover:text-white hover:bg-white/10 transition-all rounded-lg"
+                  asChild
+                >
+                  <a href="/dashboard">Dashboard</a>
+                </Button>
+              </motion.div>
+              <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                <Button
+                  className="text-base px-5 h-10 bg-gradient-to-r from-indigo-500 to-cyan-500 text-white border-0 hover:shadow-lg hover:shadow-indigo-500/30 transition-all rounded-lg"
+                  onClick={logout}
+                >
+                  Log out
+                </Button>
+              </motion.div>
             </>
           ) : (
             <>
-              <Button variant="ghost" className="text-base px-5 h-10" onClick={onLoginClick}>
-                Log in
-              </Button>
-              <Button className="text-base px-6 h-10" onClick={onSignupClick}>
-                Sign up free
-              </Button>
+              <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                <Button
+                  variant="ghost"
+                  className="text-base px-5 h-10 text-slate-300 hover:text-white hover:bg-white/10 transition-all rounded-lg"
+                  onClick={onLoginClick}
+                >
+                  Log in
+                </Button>
+              </motion.div>
+              <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                <Button
+                  className="text-base px-6 h-10 bg-gradient-to-r from-indigo-500 to-cyan-500 text-white border-0 hover:shadow-lg hover:shadow-indigo-500/30 transition-all rounded-lg"
+                  onClick={onSignupClick}
+                >
+                  Sign up free
+                </Button>
+              </motion.div>
             </>
           )}
         </div>
 
         {/* Mobile toggle */}
         <div className="flex items-center gap-2 md:hidden">
-          <Button variant="ghost" size="icon" className="h-10 w-10" onClick={toggle}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 text-slate-400 hover:text-white hover:bg-white/10 transition-colors rounded-lg"
+            onClick={toggle}
+          >
             {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </Button>
-          <Button variant="ghost" size="icon" className="h-10 w-10" onClick={() => setMobileOpen(!mobileOpen)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 text-slate-400 hover:text-white hover:bg-white/10 transition-colors rounded-lg"
+            onClick={() => setMobileOpen(!mobileOpen)}
+          >
             {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
           </Button>
         </div>
@@ -89,28 +141,66 @@ export function Navbar({ onLoginClick, onSignupClick }: NavbarProps) {
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          className="border-t border-border bg-background px-6 py-6 md:hidden"
+          className="border-t border-indigo-500/20 bg-black/60 backdrop-blur-xl px-6 py-6 md:hidden"
         >
           <div className="flex flex-col gap-4">
             {links.map((l) => (
-              <a
+              <motion.a
                 key={l.label}
                 href={l.href}
-                className="text-lg font-medium text-muted-foreground hover:text-foreground transition-colors"
+                className="text-lg font-medium text-slate-300 hover:text-white transition-colors"
                 onClick={() => setMobileOpen(false)}
+                whileHover={{ x: 8 }}
               >
                 {l.label}
-              </a>
+              </motion.a>
             ))}
             {isAuthenticated ? (
               <>
-                <a href="/dashboard" className="text-lg font-semibold text-foreground">Dashboard</a>
-                <Button variant="outline" className="h-12 text-base" onClick={logout}>Log out</Button>
+                <motion.a
+                  href="/dashboard"
+                  className="text-lg font-semibold text-white hover:text-indigo-300 transition-colors"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  Dashboard
+                </motion.a>
+                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                  <Button
+                    className="h-12 w-full text-base bg-gradient-to-r from-indigo-500 to-cyan-500 text-white border-0 hover:shadow-lg hover:shadow-indigo-500/30 transition-all rounded-lg"
+                    onClick={() => {
+                      void logout();
+                      setMobileOpen(false);
+                    }}
+                  >
+                    Log out
+                  </Button>
+                </motion.div>
               </>
             ) : (
               <div className="flex flex-col gap-3 pt-2">
-                <Button variant="ghost" className="h-12 text-base" onClick={() => { onLoginClick(); setMobileOpen(false); }}>Log in</Button>
-                <Button className="h-12 text-base" onClick={() => { onSignupClick(); setMobileOpen(false); }}>Sign up free</Button>
+                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                  <Button
+                    variant="ghost"
+                    className="h-12 w-full text-base text-slate-300 hover:text-white hover:bg-white/10 transition-all rounded-lg"
+                    onClick={() => {
+                      onLoginClick();
+                      setMobileOpen(false);
+                    }}
+                  >
+                    Log in
+                  </Button>
+                </motion.div>
+                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                  <Button
+                    className="h-12 w-full text-base bg-gradient-to-r from-indigo-500 to-cyan-500 text-white border-0 hover:shadow-lg hover:shadow-indigo-500/30 transition-all rounded-lg"
+                    onClick={() => {
+                      onSignupClick();
+                      setMobileOpen(false);
+                    }}
+                  >
+                    Sign up free
+                  </Button>
+                </motion.div>
               </div>
             )}
           </div>

@@ -1,1 +1,5 @@
-{}
+{
+  "/page": "app/page.js",
+  "/(protected)/dashboard/page": "app/(protected)/dashboard/page.js",
+  "/(protected)/subject/[subjectId]/page": "app/(protected)/subject/[subjectId]/page.js"
+}
