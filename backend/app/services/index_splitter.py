@@ -144,6 +144,10 @@ _CHAPTER_NUM_RE = re.compile(rf"(?:{_TOC_MARKERS_PAT})\s*(\d+)", re.IGNORECASE)
 _TOC_ENTRY_HINT_RE = re.compile(rf"\b(?:{_TOC_MARKERS_PAT})\s*\d+\b", re.IGNORECASE)
 
 
+_BLOB_ENTRY_START_RE = re.compile(r"(?<!\d)(\d{1,3})\s*[\.|\)]\s+")
+_PAGE_RANGE_RE = re.compile(r"(?<!\d)(\d{1,4})(?:\s*[-–—]\s*(\d{1,4}))?(?!\d)")
+
+
 @dataclass(frozen=True)
 class ParsedIndexChapter:
     chapter_number: int
@@ -459,6 +463,15 @@ async def parse_index_chapters(
         looks_hindi = False
     if looks_hindi and (not chapters or len(chapters) < 4) and index_pages:
         try:
+            # Fallback A: parse ToC entries directly from the extracted text blob.
+            # This handles the common OCR failure mode where the entire table
+            # is returned as a single wrapped line, so line-based regex misses
+            # every entry except the last one.
+            blob_chapters = _parse_index_numbered_entries_blob(index_text)
+            if blob_chapters and len(blob_chapters) > (len(chapters) if chapters else 0):
+                chapters = _normalize_parsed_chapters(blob_chapters)
+
+            # Fallback B: table-specific OCR parser.
             rows = parse_hindi_toc_table_pages(
                 pdf_path=str(pdf_path),
                 index_pages_1b=list(index_pages),
@@ -540,6 +553,103 @@ async def parse_index_chapters(
         )
 
     return chapters, int(offset)
+
+
+def _parse_index_numbered_entries_blob(index_text: str) -> List[ParsedIndexChapter]:
+    """Parse Hindi/Indic ToC when entries are collapsed into a single text blob.
+
+    Many scanned/table ToCs are extracted as one long line, which defeats
+    line-based parsing. This routine scans for numbered entries like:
+        "1. Title ... 1-2 2. Next ... 3-9 ..."
+
+    Returns ParsedIndexChapter entries in encounter order.
+    """
+
+    raw = (index_text or "").strip()
+    if not raw:
+        return []
+
+    # Normalize digits early so we can match 1., 2., etc.
+    text = _ascii_digits(_normalize(raw))
+    if not text:
+        return []
+
+    starts = list(_BLOB_ENTRY_START_RE.finditer(text))
+    if len(starts) < 2:
+        return []
+
+    out: List[ParsedIndexChapter] = []
+    prev_page: Optional[int] = None
+
+    for idx, m in enumerate(starts):
+        try:
+            serial = int(m.group(1))
+        except Exception:
+            serial = idx + 1
+
+        entry_start = m.end()
+        entry_end = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
+        chunk = text[entry_start:entry_end].strip()
+        if not chunk:
+            continue
+
+        # Extract all numeric candidates; ToC rows often contain both the
+        # row number and the page range.
+        matches = list(_PAGE_RANGE_RE.finditer(chunk))
+        if not matches:
+            continue
+
+        # Choose a start page candidate that is monotonic w.r.t. previous.
+        page_candidates: List[int] = []
+        for pm in matches:
+            try:
+                page_candidates.append(int(pm.group(1)))
+            except Exception:
+                continue
+        if not page_candidates:
+            continue
+
+        page_start = page_candidates[-1]
+        if prev_page is not None:
+            for cand in reversed(page_candidates):
+                if cand >= int(prev_page):
+                    page_start = int(cand)
+                    break
+
+        prev_page = int(page_start)
+
+        # Title: remove trailing page tokens best-effort.
+        last_match = None
+        for pm in reversed(matches):
+            try:
+                if int(pm.group(1)) == int(page_start):
+                    last_match = pm
+                    break
+            except Exception:
+                continue
+        if last_match is None:
+            last_match = matches[-1]
+
+        title_part = chunk[: last_match.start()].strip(" -:\t")
+        title_part = _normalize(title_part)
+
+        title_alpha = sum(
+            1
+            for ch in title_part
+            if ch.isalpha() or ("\u0900" <= ch <= "\u097F") or ("\u0A80" <= ch <= "\u0AFF")
+        )
+        if title_alpha < 3:
+            continue
+
+        out.append(
+            ParsedIndexChapter(
+                chapter_number=int(serial) if serial > 0 else int(len(out) + 1),
+                chapter_title=title_part[:300] or f"Chapter {len(out) + 1}",
+                start_page_printed=int(page_start),
+            )
+        )
+
+    return out
 
 
 def compute_chapter_ranges(

@@ -15,11 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import math
 import re
-import os
-import shutil
-from pathlib import Path
-from typing import Optional
+import unicodedata
 
 import fitz  # PyMuPDF
 
@@ -41,21 +39,95 @@ def _ocr_quality_score(text: str) -> float:
     if not t:
         return 0.0
 
-    useful = 0
     total = 0
+    useful = 0
+    devanagari = 0
+    gujarati = 0
+    latin = 0
+    other_alnum = 0
+    punct = 0
+
     for ch in t:
         if ch.isspace():
             continue
         total += 1
         o = ord(ch)
-        if ch.isalnum() or (0x0900 <= o <= 0x097F) or (0x0A80 <= o <= 0x0AFF):
+
+        is_dev = 0x0900 <= o <= 0x097F
+        is_guj = 0x0A80 <= o <= 0x0AFF
+        is_latin = ch.isalnum() and o < 128
+
+        if is_dev:
+            devanagari += 1
             useful += 1
+        elif is_guj:
+            gujarati += 1
+            useful += 1
+        elif is_latin:
+            latin += 1
+            useful += 1
+        elif ch.isalnum():
+            other_alnum += 1
+            # Count as "somewhat" useful but penalize later.
+            useful += 1
+        else:
+            punct += 1
+
     if total <= 0:
         return 0.0
 
     ratio = useful / total
-    # Small weight on length; big weight on ratio.
-    return (ratio * 100.0) + min(200.0, len(t) / 4.0)
+    score = (ratio * 100.0) + min(200.0, len(t) / 4.0)
+
+    # Penalize outputs that look like the wrong script/noisy segmentation.
+    if total:
+        alnum_total = devanagari + gujarati + latin + other_alnum
+        if alnum_total:
+            # Determine dominant script among Devanagari/Gujarati/Latin.
+            dominant = "latin"
+            dominant_count = latin
+            if devanagari > dominant_count:
+                dominant = "devanagari"
+                dominant_count = devanagari
+            if gujarati > dominant_count:
+                dominant = "gujarati"
+                dominant_count = gujarati
+
+            non_dominant = 0
+            if dominant == "devanagari":
+                non_dominant = gujarati + latin
+            elif dominant == "gujarati":
+                non_dominant = devanagari + latin
+            else:
+                non_dominant = devanagari + gujarati
+
+            # If OCR mixes scripts heavily, it's usually worse for downstream parsing.
+            non_dom_r = non_dominant / alnum_total
+            score -= non_dom_r * 120.0
+
+            # If there's no clear dominant script, treat it as noisy.
+            dom_r = dominant_count / alnum_total
+            if dom_r < 0.6:
+                score -= (0.6 - dom_r) * 200.0
+
+            # Penalize unknown alnum (often junk symbols).
+            score -= (other_alnum / alnum_total) * 80.0
+
+            # Penalize high mixing across script buckets.
+            # Clean pages typically have one dominant bucket; garbled OCR spreads across many.
+            ps: list[float] = []
+            for c in (devanagari, gujarati, latin, other_alnum):
+                if c:
+                    ps.append(c / alnum_total)
+            if len(ps) > 1:
+                entropy = -sum(p * math.log(p) for p in ps)
+                max_entropy = math.log(4.0)
+                if max_entropy:
+                    score -= (entropy / max_entropy) * 180.0
+
+        score -= (punct / total) * 40.0
+
+    return score
 
 
 @dataclass(frozen=True)
@@ -66,11 +138,14 @@ class ExtractedPage:
 
 
 def _normalize_text(text: str) -> str:
-    text = text or ""
-    text = text.replace("\u00a0", " ")
+    t = unicodedata.normalize("NFKC", text or "")
+    t = t.replace("\u00a0", " ")
+    t = t.replace("\ufeff", "")
+    # Remove control chars except newlines/tabs.
+    t = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", t)
     # Collapse excessive whitespace but preserve line breaks.
-    text = "\n".join([" ".join(ln.split()).strip() for ln in text.splitlines()])
-    return "\n".join([ln for ln in text.splitlines() if ln]).strip()
+    t = "\n".join([" ".join(ln.split()).strip() for ln in t.splitlines()])
+    return "\n".join([ln for ln in t.splitlines() if ln]).strip()
 
 
 def _looks_unreadable(text: str) -> bool:
@@ -82,12 +157,21 @@ def _looks_unreadable(text: str) -> bool:
     """
 
     t = (text or "").strip()
-    if len(t) < 40:
+    # Hard minimum: OCR is cheaper than indexing garbage.
+    if len(t) < 50:
         return True
 
-    bad = t.count("\ufffd")
-    if bad >= 3:
+    # Replacement chars are a strong signal of broken extraction.
+    repl = t.count("\ufffd")
+    if repl >= 3:
         return True
+
+    # Ratio-based check for "unknown" symbols.
+    non_space = [ch for ch in t if not ch.isspace()]
+    if non_space:
+        bad = sum(1 for ch in non_space if ch == "\ufffd" or ch == "�")
+        if (bad / len(non_space)) > 0.06:
+            return True
 
     # If almost nothing is alphanumeric or in common scripts, it's likely junk.
     # Keep Devanagari/Gujarati ranges.
@@ -109,35 +193,21 @@ def _looks_unreadable(text: str) -> bool:
 
 def _ocr_page(page: fitz.Page, *, ocr_langs: str, dpi: int, config: str) -> str:
     try:
-        import pytesseract  # type: ignore
-        from PIL import Image  # type: ignore
+        from app.utils.ocr_utils import (
+            convert_pdf_page_to_image,
+            preprocess_image_for_ocr,
+            extract_text_from_image,
+        )
+
+        img = convert_pdf_page_to_image(page, dpi=int(dpi))
+        img = preprocess_image_for_ocr(img)
+        text = extract_text_from_image(img, lang=str(ocr_langs), config=(config or ""))
+        return _normalize_text(text)
     except Exception as e:
         raise RuntimeError(
-            "OCR fallback requested but pytesseract/Pillow are not installed. "
-            "Install pytesseract and Pillow (and system Tesseract + language packs)."
+            "OCR fallback failed. Ensure system Tesseract OCR is installed with language packs: eng, hin, mar, guj. "
+            "Also install Python deps: pytesseract, Pillow, opencv-python, pdf2image."
         ) from e
-
-    # Ensure pytesseract can find the Tesseract binary even when PATH changes
-    # haven't propagated to the current Python process yet (common on Windows).
-    cmd = _resolve_tesseract_cmd()
-    if cmd:
-        try:
-            pytesseract.pytesseract.tesseract_cmd = cmd
-        except Exception:
-            pass
-
-    pix = page.get_pixmap(dpi=int(dpi))
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-    # Light pre-processing helps OCR on scans.
-    try:
-        img = img.convert("L")  # grayscale
-    except Exception:
-        pass
-
-    # Tesseract config: try tuned page segmentation; OCR quality is driven by dpi + PSM.
-    text = pytesseract.image_to_string(img, lang=ocr_langs, config=(config or ""))
-    return _normalize_text(text)
 
 
 def ocr_page_region_text(
@@ -155,20 +225,13 @@ def ocr_page_region_text(
     """
 
     try:
-        import pytesseract  # type: ignore
         from PIL import Image  # type: ignore
+        from app.utils.ocr_utils import preprocess_image_for_ocr, extract_text_from_image
     except Exception as e:
         raise RuntimeError(
-            "OCR fallback requested but pytesseract/Pillow are not installed. "
+            "OCR fallback requested but OCR dependencies are missing. "
             "Install pytesseract and Pillow (and system Tesseract + language packs)."
         ) from e
-
-    cmd = _resolve_tesseract_cmd()
-    if cmd:
-        try:
-            pytesseract.pytesseract.tesseract_cmd = cmd
-        except Exception:
-            pass
 
     attempts = [
         (int(dpi), config or ""),
@@ -178,7 +241,7 @@ def ocr_page_region_text(
     ]
 
     best = ""
-    best_score = 0.0
+    best_score = float("-inf")
     last_err: Exception | None = None
 
     for d, cfg in attempts:
@@ -187,13 +250,9 @@ def ocr_page_region_text(
             if pix.width <= 0 or pix.height <= 0:
                 continue
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            try:
-                img = img.convert("L")
-            except Exception:
-                pass
 
-            txt = pytesseract.image_to_string(img, lang=ocr_langs, config=(cfg or ""))
-            norm = _normalize_text(txt)
+            img = preprocess_image_for_ocr(img)
+            norm = extract_text_from_image(img, lang=ocr_langs, config=(cfg or ""))
             sc = _ocr_quality_score(norm)
             if sc > best_score:
                 best_score = sc
@@ -214,38 +273,10 @@ def ocr_page_region_text(
     return ""
 
 
-def _resolve_tesseract_cmd() -> Optional[str]:
-    """Return a full path to tesseract.exe if it can be found.
-
-    pytesseract discovers the binary via PATH, but in long-running processes the
-    PATH may not reflect recent installs. We also support an explicit override
-    env var for reliability.
-    """
-
-    override = (os.environ.get("TESSERACT_CMD") or "").strip()
-    if override and Path(override).exists():
-        return override
-
-    which = shutil.which("tesseract")
-    if which:
-        return which
-
-    # Common Windows install locations.
-    candidates = [
-        r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
-        r"C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
-    ]
-    for c in candidates:
-        if Path(c).exists():
-            return c
-
-    return None
-
-
 def extract_page_text(
     page: fitz.Page,
     *,
-    min_chars: int = 40,
+    min_chars: int = 50,
     ocr_langs: str = DEFAULT_OCR_LANGS,
     force_ocr: bool = False,
 ) -> ExtractedPage:
@@ -275,7 +306,7 @@ def extract_page_text(
     ]
 
     best_text = ""
-    best_score = 0.0
+    best_score = float("-inf")
     last_err: Exception | None = None
     for dpi, cfg in ocr_attempts:
         try:
@@ -294,7 +325,12 @@ def extract_page_text(
     except Exception:
         pass
 
-    e = last_err or RuntimeError("OCR produced no usable text")
+    # If OCR executed but produced no text (e.g., decorative cover pages), treat
+    # it as best-effort and continue without failing ingestion.
+    if last_err is None:
+        return ExtractedPage(page_number=page_no, text=norm, used_ocr=True)
+
+    e = last_err
     try:
         raise e
     except Exception as e:
@@ -321,7 +357,7 @@ def extract_text_by_page_range(
     *,
     start_page: int,
     end_page: int,
-    min_chars: int = 40,
+    min_chars: int = 50,
     ocr_langs: str = DEFAULT_OCR_LANGS,
 ) -> list[tuple[int, str]]:
     """Extract (page_number, text) for a page range (inclusive), with OCR fallback."""

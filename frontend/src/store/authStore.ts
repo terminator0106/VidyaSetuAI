@@ -49,18 +49,40 @@ export const useAuthStore = create<AuthState>((set) => ({
   error: null,
 
   initialize: async () => {
-    try {
-      const res = await api.get('/auth/session');
-      const user: User = res.data?.user;
-      if (user) {
-        set({ user, isAuthenticated: true, isInitialized: true });
-      } else {
-        set({ user: null, isAuthenticated: false, isInitialized: true });
+    const delaysMs = [0, 250, 750];
+    let lastErr: unknown = null;
+
+    for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+      if (delaysMs[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, delaysMs[attempt]));
       }
-    } catch (e) {
-      // Silent fail on initialization - user not logged in
-      set({ user: null, isAuthenticated: false, isInitialized: true });
+
+      try {
+        const res = await api.get('/auth/session');
+        const user: User = res.data?.user;
+        if (user) {
+          set({ user, isAuthenticated: true, isInitialized: true, error: null });
+        } else {
+          set({ user: null, isAuthenticated: false, isInitialized: true, error: null });
+        }
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (axios.isAxiosError(e)) {
+          const status = e.response?.status;
+          // Only treat auth errors as a real "logged out" state.
+          if (status === 401 || status === 403) {
+            set({ user: null, isAuthenticated: false, isInitialized: true, error: null });
+            return;
+          }
+        }
+        // Otherwise, retry (handles transient 5xx or server reload).
+      }
     }
+
+    // If we still can't reach session after retries, don't assume logout —
+    // but we must mark initialized to unblock the app.
+    set({ user: null, isAuthenticated: false, isInitialized: true, error: getErrorMessage(lastErr) });
   },
 
   login: async (email: string, password: string) => {

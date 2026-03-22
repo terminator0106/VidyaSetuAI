@@ -1,5 +1,7 @@
 {
   "/page": "app/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/(protected)/subject/[subjectId]/page": "app/(protected)/subject/[subjectId]/page.js",
   "/(protected)/dashboard/page": "app/(protected)/dashboard/page.js",
-  "/(protected)/subject/[subjectId]/page": "app/(protected)/subject/[subjectId]/page.js"
+  "/(protected)/chapter/[chapterId]/page": "app/(protected)/chapter/[chapterId]/page.js"
 }

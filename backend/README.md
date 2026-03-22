@@ -94,7 +94,11 @@ Windows-friendly options to run Redis:
 ## Run the server
 From the `backend/` folder with venv activated:
 
-- `uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
+- Recommended (reload only on Python code changes; ignores `data/` changes like PDF deletes):
+   - `uvicorn app.main:app --reload --reload-include "*.py" --reload-exclude "data/*" --reload-exclude "data/**" --host 127.0.0.1 --port 8000`
+
+- If you prefer the simple command (may reload on PDF/data changes):
+   - `uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
 
 Health check:
 - `GET http://localhost:8000/health`

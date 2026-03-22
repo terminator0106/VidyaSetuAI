@@ -28,7 +28,14 @@ def _get_client() -> AsyncOpenAI:
     if _client is None:
         if not settings.groq_api_key:
             raise RuntimeError("GROQ_API_KEY is not configured")
-        _client = AsyncOpenAI(api_key=settings.groq_api_key, base_url=settings.groq_base_url)
+        # Disable long internal retries; llm_client implements a cooldown and
+        # callers (e.g., translation) can degrade gracefully.
+        _client = AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+            max_retries=0,
+            timeout=30.0,
+        )
     return _client
 
 
